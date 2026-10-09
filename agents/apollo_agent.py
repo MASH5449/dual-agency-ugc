@@ -5,7 +5,7 @@ APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 
 def fetch_leads(limit: int = 25):
     """
-    Fetches leads from Apollo API using header-based authentication.
+    Fetches leads from Apollo API with valid schema and header authentication.
     """
     if not APOLLO_API_KEY:
         print("[Apollo Agent] Error: APOLLO_API_KEY environment variable missing.")
@@ -16,10 +16,13 @@ def fetch_leads(limit: int = 25):
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
-        "api-key": APOLLO_API_KEY
+        "api-key": APOLLO_API_KEY,
+        "x-api-key": APOLLO_API_KEY
     }
 
+    # Apollo requires api_key in body + valid parameter keys
     payload = {
+        "api_key": APOLLO_API_KEY,
         "page": 1,
         "per_page": limit,
         "person_titles": ["Founder", "CEO", "Owner"]
@@ -32,6 +35,11 @@ def fetch_leads(limit: int = 25):
         people = data.get("people", [])
         print(f"[Apollo Agent] Successfully fetched {len(people)} leads.")
         return people
+    except requests.exceptions.HTTPError as err:
+        print(f"[Apollo Agent] API Call failed: {err}")
+        if err.response is not None:
+            print(f"[Apollo Agent] Response Body: {err.response.text}")
+        return []
     except Exception as e:
-        print(f"[Apollo Agent] API Call failed: {e}")
+        print(f"[Apollo Agent] Unexpected Error: {e}")
         return []
