@@ -2,9 +2,10 @@ import os
 import json
 from playwright.sync_api import sync_playwright
 
-def generate_ugc_video(customer_email: str):
+def generate_ugc_video(script_text: str = None, customer_email: str = None, **kwargs):
     """
     Automates Arcads video creation using persistent browser session state.
+    Supports script_text or customer_email input from main.py.
     """
     state_json = os.getenv("ARCADS_STORAGE_STATE")
     
@@ -18,7 +19,8 @@ def generate_ugc_video(customer_email: str):
         print("[Arcads Agent] Error: ARCADS_STORAGE_STATE variable or state.json file is missing.")
         return False
 
-    print(f"[Arcads Agent] Starting browser automation for {customer_email}...")
+    target_info = customer_email or script_text or "default task"
+    print(f"[Arcads Agent] Starting browser automation for: {target_info}...")
 
     try:
         with sync_playwright() as p:
