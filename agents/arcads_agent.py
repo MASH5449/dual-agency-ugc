@@ -5,18 +5,21 @@ from playwright.async_api import async_playwright
 async def generate_ugc_video(script_text: str = None, customer_email: str = None, **kwargs):
     """
     Automates Arcads video creation using persistent browser session state.
-    Uses async API to match FastAPI's event loop.
     """
-    state_json = os.getenv("ARCADS_STORAGE_STATE")
-    
-    # Write environment variable state to a temporary file
+    state_json_str = os.getenv("ARCADS_STORAGE_STATE")
     state_path = "state.json"
-    if state_json:
-        with open(state_path, "w") as f:
-            f.write(state_json)
 
-    if not os.path.exists(state_path):
-        print("[Arcads Agent] Error: ARCADS_STORAGE_STATE variable or state.json file is missing.")
+    if state_json_str:
+        try:
+            # Parse to ensure valid JSON, then dump cleanly formatted
+            parsed_json = json.loads(state_json_str)
+            with open(state_path, "w") as f:
+                json.dump(parsed_json, f)
+        except json.JSONDecodeError as e:
+            print(f"[Arcads Agent] Error decoding ARCADS_STORAGE_STATE JSON: {e}")
+            return False
+    else:
+        print("[Arcads Agent] Error: ARCADS_STORAGE_STATE variable missing.")
         return False
 
     target_info = customer_email or script_text or "default task"
@@ -24,7 +27,6 @@ async def generate_ugc_video(script_text: str = None, customer_email: str = None
 
     try:
         async with async_playwright() as p:
-            # Note the 'await' added to all Playwright commands
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(storage_state=state_path)
             page = await context.new_page()
@@ -32,7 +34,6 @@ async def generate_ugc_video(script_text: str = None, customer_email: str = None
             print("[Arcads Agent] Navigating to Arcads app...")
             await page.goto("https://app.arcads.ai", wait_until="networkidle")
             
-            # Check if session is authenticated
             if "login" in page.url:
                 print("[Arcads Agent] Error: Session state expired or invalid. Please re-export cookies.")
                 await browser.close()
