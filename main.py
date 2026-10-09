@@ -1,7 +1,12 @@
 import os
+import sys
 import asyncio
 import stripe
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+
+# Ensure Python looks in the current working directory for modules
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from agents.stripe_handler import process_checkout_session
 from agents.apollo_agent import fetch_leads
 from agents.instantly_agent import push_leads_to_campaign
