@@ -11,9 +11,9 @@ app = FastAPI(title="Dual Agency UGC Engine")
 
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-def execute_autonomous_workflow(order_data: dict):
+async def execute_autonomous_workflow(order_data: dict):
     """
-    Executes the Dual-Agency pipeline based on tier.
+    Executes the Dual-Agency pipeline based on tier in an async context.
     """
     amount = order_data.get("amount", 0)
     customer_email = order_data.get("customer_email")
@@ -28,7 +28,7 @@ def execute_autonomous_workflow(order_data: dict):
     # Tier 3 & 4: UGC Video Generation Pipeline
     elif amount in [1000, 2500]:
         script = f"Transform your business with top tier UGC ads. Designed for {customer_email}."
-        asyncio.run(generate_ugc_video(script_text=script))
+        await generate_ugc_video(script_text=script)
 
 @app.get("/")
 def health_check():
@@ -52,7 +52,6 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
     if event.get("type") == "checkout.session.completed":
         session = event["data"]["object"]
         order = process_checkout_session(session)
-        # Process heavy agent execution in background to keep webhook response fast (<2s)
         background_tasks.add_task(execute_autonomous_workflow, order)
 
     return {"status": "success", "message": "Event processed successfully"}
