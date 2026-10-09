@@ -5,7 +5,7 @@ APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 
 def fetch_leads(limit: int = 25):
     """
-    Fetches leads from Apollo API using the updated people/search payload schema.
+    Fetches leads from Apollo API using header-based authentication.
     """
     if not APOLLO_API_KEY:
         print("[Apollo Agent] Error: APOLLO_API_KEY environment variable missing.")
@@ -16,11 +16,10 @@ def fetch_leads(limit: int = 25):
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
-        "X-Api-Key": APOLLO_API_KEY
+        "api-key": APOLLO_API_KEY
     }
 
     payload = {
-        "api_key": APOLLO_API_KEY,
         "page": 1,
         "per_page": limit,
         "person_titles": ["Founder", "CEO", "Owner"]
