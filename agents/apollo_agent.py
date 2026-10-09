@@ -3,35 +3,36 @@ import requests
 
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 
-def fetch_leads(job_titles=None, location="United States", limit=10):
+def fetch_leads(limit: int = 25):
     """
-    Retrieves targeted leads from Apollo API based on search parameters.
+    Fetches leads from Apollo API using the updated people/search payload schema.
     """
     if not APOLLO_API_KEY:
-        print("[Apollo Agent] Error: APOLLO_API_KEY is not set.")
+        print("[Apollo Agent] Error: APOLLO_API_KEY environment variable missing.")
         return []
 
     url = "https://api.apollo.io/v1/mixed_people/search"
+    
     headers = {
         "Content-Type": "application/json",
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache",
+        "X-Api-Key": APOLLO_API_KEY
     }
-    
+
     payload = {
         "api_key": APOLLO_API_KEY,
-        "person_titles": job_titles or ["Founder", "CEO", "Marketing Director"],
-        "person_locations": [location],
         "page": 1,
-        "per_page": limit
+        "per_page": limit,
+        "person_titles": ["Founder", "CEO", "Owner"]
     }
-    
+
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
-        leads = data.get("people", [])
-        print(f"[Apollo Agent] Successfully fetched {len(leads)} leads.")
-        return leads
+        people = data.get("people", [])
+        print(f"[Apollo Agent] Successfully fetched {len(people)} leads.")
+        return people
     except Exception as e:
         print(f"[Apollo Agent] API Call failed: {e}")
         return []
