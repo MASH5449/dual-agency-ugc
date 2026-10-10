@@ -268,6 +268,36 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+import stripe
+from fastapi import Request, HTTPException, Header, BackgroundTasks
+
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "sk_test_placeholder")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_placeholder")
+stripe.api_key = STRIPE_SECRET_KEY
+
+@app.post("/webhook/stripe")
+async def stripe_webhook(
+    request: Request,
+    stripe_signature: str = Header(None, alias="Stripe-Signature"),
+    background_tasks: BackgroundTasks = None
+):
+    """Listens for Stripe checkout completions to trigger fulfillment."""
+    payload = await request.body()
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, stripe_signature, STRIPE_WEBHOOK_SECRET
+        )
+    except Exception as e:
+        LOG.error(f"Stripe webhook signature error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        metadata = session.get('metadata', {})
+        LOG.info(f"Payment verified for brand: {metadata.get('brand_name')}")
+        # Insert DB state transition or trigger HeyGen queue here
+
+    return {"status": "success"}
 # ---------------------------------------------------------------------------
 # Railway ASGI Integration
 # ---------------------------------------------------------------------------
