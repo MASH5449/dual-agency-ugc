@@ -42,13 +42,13 @@ BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
 stripe.api_key = STRIPE_API_KEY
 
 # ------------------------------------------------------------------------------
-# AVATAR POOL
+# UPDATED AVATAR POOL WITH VALID HEYGEN VOICE IDs
 # ------------------------------------------------------------------------------
 AVATAR_POOL = [
-    {"name": "Daisy", "avatar_id": "Daisy-Theresa-20220818", "voice_id": "13da45199a6b4ba19745ad5355f32927"},
-    {"name": "Josh", "avatar_id": "Josh-inTech-20220820", "voice_id": "077ab11b14f0456388295b123d6432d1"},
-    {"name": "Kristin", "avatar_id": "Kristin-inChair-20220820", "voice_id": "e302061326464f7b8893708e33f38166"},
-    {"name": "Tyler", "avatar_id": "Tyler-inHoodie-20220820", "voice_id": "b3e020d5f850422fb7d4a2a11b6be2d6"}
+    {"name": "Daisy", "avatar_id": "Daisy-Theresa-20220818", "voice_id": "2d5b0e6cf36f460aa7fc37e3234c2d32"},
+    {"name": "Josh", "avatar_id": "Josh-inTech-20220820", "voice_id": "1bd001e7e50f421d891986aad5158bc6"},
+    {"name": "Kristin", "avatar_id": "Kristin-inChair-20220820", "voice_id": "2d5b0e6cf36f460aa7fc37e3234c2d32"},
+    {"name": "Tyler", "avatar_id": "Tyler-inHoodie-20220820", "voice_id": "1bd001e7e50f421d891986aad5158bc6"}
 ]
 
 # ------------------------------------------------------------------------------
@@ -88,7 +88,7 @@ app.add_middleware(
 def stop_instantly_lead(email: str, campaign_id: str):
     """
     Calls Instantly API v2 to mark converted buyers as 'Won / Stopped'
-    so follow-up email sequences halt immediately.
+    so follow-up email sequences halt immediately. Accepts 200 and 202.
     """
     if not INSTANTLY_API_KEY or not campaign_id:
         logger.warning("Instantly API Key or Campaign ID missing. Skipping auto-pause.")
@@ -107,8 +107,8 @@ def stop_instantly_lead(email: str, campaign_id: str):
     
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            logger.info(f"Successfully paused lead {email} in Instantly.")
+        if response.status_code in [200, 202]:
+            logger.info(f"Successfully submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
             return True
         else:
             logger.error(f"Instantly pause failed ({response.status_code}): {response.text}")
@@ -158,7 +158,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
         res_data = res.json()
-        if res.status_code == 200:
+        if res.status_code == 200 and res_data.get("data"):
             video_id = res_data.get("data", {}).get("video_id")
             logger.info(f"HeyGen generation task queued successfully. Video ID: {video_id}")
             return video_id
