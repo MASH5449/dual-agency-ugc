@@ -18,6 +18,7 @@ def generate_video(product_url: str, tier: str):
             "product_url": product_url
         }
 
+    # HeyGen v3 Videos Endpoint
     url = "https://api.heygen.com/v3/videos"
     headers = {
         "x-api-key": HEYGEN_API_KEY,
@@ -29,7 +30,7 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # Validated HeyGen v3 Payload Schema
+    # Validated HeyGen v3 Direct Flat Schema
     payload = {
         "type": "avatar",
         "avatar_id": "Daisy-inic-20220818",
