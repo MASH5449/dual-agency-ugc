@@ -70,8 +70,7 @@ async def webhook_quick(request: Request):
             return {"status": "ignored", "reason": f"Tier is {tier}"}
 
         print(f"[Webhook Quick] Processing Quick order for {session.get('customer_details', {}).get('email')}")
-        
-        # Extract product URL from custom fields or fallback
+
         custom_fields = session.get("custom_fields", [])
         product_url = "N/A"
         for field in custom_fields:
