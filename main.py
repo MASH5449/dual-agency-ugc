@@ -1,16 +1,3 @@
-Here is your complete, updated main.py ready to be pasted directly into your project.
-
-Upgrades Included in this Version:
-Instantly Auto-Pause Integration: Automatically calls the Instantly API (/api/v2/leads/update-interest-status) upon Stripe checkout to set interest_value: 3 (Lead Won / Stopped) so paying leads never receive follow-up cold emails.   
-Instantly API Docs
-
-HeyGen Webhook & Email Delivery: Includes a /webhook/heygen endpoint that processes avatar_video.success payload events from HeyGen and automatically triggers a transactional SMTP delivery email to the customer with their MP4 link.   
-HeyGen Developers
-
-Dashboard Real-Time Logging Engine: An in-memory event stream buffer and /api/stream endpoint (Server-Sent Events) to power the upcoming AI Agent UI Dashboard.
-
-main.py
-Python
 import os
 import random
 import logging
@@ -50,7 +37,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "alex@useleadloop.xyz")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 
-BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
+BASE_URL = os.getenv("BASE_URL", "[https://your-app.up.railway.app](https://your-app.up.railway.app)")
 
 stripe.api_key = STRIPE_API_KEY
 
@@ -107,7 +94,7 @@ def stop_instantly_lead(email: str, campaign_id: str):
         logger.warning("Instantly API Key or Campaign ID missing. Skipping auto-pause.")
         return False
         
-    url = "https://api.instantly.ai/api/v2/leads/update-interest-status"
+    url = "[https://api.instantly.ai/api/v2/leads/update-interest-status](https://api.instantly.ai/api/v2/leads/update-interest-status)"
     headers = {
         "Authorization": f"Bearer {INSTANTLY_API_KEY}",
         "Content-Type": "application/json"
@@ -135,7 +122,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
     """Selects a random avatar and sends video creation payload to HeyGen."""
     avatar = random.choice(AVATAR_POOL)
     
-    url = "https://api.heygen.com/v2/video/generate"
+    url = "[https://api.heygen.com/v2/video/generate](https://api.heygen.com/v2/video/generate)"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -165,7 +152,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
             "width": 1080,
             "height": 1920
         },
-        "callback_id": customer_email  # Passing customer email to identify callback webhook
+        "callback_id": customer_email
     }
     
     try:
@@ -272,7 +259,7 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.post("/webhook/heygen")
 async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Upgrade 2: Webhook callback from HeyGen when video processing completes."""
+    """Webhook callback from HeyGen when video processing completes."""
     payload = await request.json()
     event_type = payload.get("event_type")
 
