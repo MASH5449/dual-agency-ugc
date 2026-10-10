@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import asyncio
 import smtplib
 import requests
@@ -12,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="LeadLoop Engine API", version="2.0.0")
 
+# Enable CORS for all incoming client calls
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,9 +22,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Shared event queue for Real-time SSE streaming
 event_queue = asyncio.Queue()
 
-# In-Memory Storage for Generated Leads (Bypasses local JSON wipe on container restart)
+# In-Memory Storage for Generated Leads
 leads_db = []
 
 # Environment Variables
@@ -30,8 +33,6 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 INSTANTLY_API_KEY = os.getenv("INSTANTLY_API_KEY", "")
 INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
-HEYGEN_AVATAR_ID = os.getenv("HEYGEN_AVATAR_ID", "Daisy_public_3_20240108")
-HEYGEN_VOICE_ID = os.getenv("HEYGEN_VOICE_ID", "13fb292a05c2496090e3676a16174a7b")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.porkbun.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -39,6 +40,27 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
+
+# ------------------------------------------------------------------
+# CURATED AVATAR & VOICE ROSTER MATRIX
+# ------------------------------------------------------------------
+AVATAR_ROSTER = {
+    "tech_male": {
+        "avatar_id": "Tyler_public_2_20240108",
+        "voice_id": "1bd001e7e50f421d891986aad5158bc8",
+        "name": "Tyler (Tech Spokesperson)"
+    },
+    "dtc_female": {
+        "avatar_id": "Daisy_public_3_20240108",
+        "voice_id": "13fb292a05c2496090e3676a16174a7b",
+        "name": "Daisy (E-Commerce UGC)"
+    },
+    "enterprise_male": {
+        "avatar_id": "Edward_public_20240108",
+        "voice_id": "e58b323605c1410f929312f2c0500138",
+        "name": "Edward (Corporate Representative)"
+    }
+}
 
 # ------------------------------------------------------------------
 # LOGGING & SSE EVENT HELPER
@@ -142,12 +164,21 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V3 VIDEO RENDER HELPER
+# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
-def trigger_heygen_render(email: str, company_name: str):
+def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     if not HEYGEN_API_KEY:
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
+
+    # Select requested persona, or randomly assign one from the roster
+    if persona and persona in AVATAR_ROSTER:
+        selected_actor = AVATAR_ROSTER[persona]
+    else:
+        selected_key = random.choice(list(AVATAR_ROSTER.keys()))
+        selected_actor = AVATAR_ROSTER[selected_key]
+
+    print(f"[Avatar Director] Dispatching render with actor: {selected_actor['name']}")
 
     url = "https://api.heygen.com/v2/video/generate"
     headers = {
@@ -162,13 +193,13 @@ def trigger_heygen_render(email: str, company_name: str):
             {
                 "character": {
                     "type": "avatar",
-                    "avatar_id": HEYGEN_AVATAR_ID,
+                    "avatar_id": selected_actor["avatar_id"],
                     "avatar_style": "normal"
                 },
                 "voice": {
                     "type": "text",
                     "input_text": script_text,
-                    "voice_id": HEYGEN_VOICE_ID
+                    "voice_id": selected_actor["voice_id"]
                 }
             }
         ],
@@ -208,12 +239,14 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
         if custom_fields and len(custom_fields) > 0:
             company_name = custom_fields[0].get("text", {}).get("value", "Your Business")
 
+        persona = payload.get("persona")
+
         await log_event("Fulfillment Agent", f"Payment received from {customer_email}")
 
         background_tasks.add_task(pause_instantly_lead, customer_email)
         await log_event("Outreach Agent", f"Lead {customer_email} paused in Instantly")
 
-        background_tasks.add_task(trigger_heygen_render, customer_email, company_name)
+        background_tasks.add_task(trigger_heygen_render, customer_email, company_name, persona)
         await log_event("Avatar Director", f"Dispatched HeyGen rendering task for {company_name}")
 
     return {"status": "success"}
@@ -252,10 +285,8 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     
-    # Run Lead Hunter
     run_lead_hunter()
 
-    # Agent X Startup Guard
     if not X_BEARER_TOKEN:
         print("[Agent X] Credentials missing in environment. Worker sleeping.")
     else:
