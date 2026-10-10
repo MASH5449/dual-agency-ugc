@@ -29,7 +29,7 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # HeyGen v3 Schema with top-level 'type': 'avatar' discriminator
+    # HeyGen v3 Payload with required voice_id
     payload = {
         "type": "avatar",
         "video_inputs": [
@@ -41,7 +41,8 @@ def generate_video(product_url: str, tier: str):
                 },
                 "voice": {
                     "type": "text",
-                    "input_text": script_text
+                    "input_text": script_text,
+                    "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54"  # Public HeyGen Voice ID
                 }
             }
         ],
