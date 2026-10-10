@@ -8,7 +8,7 @@ MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 def generate_video(product_url: str, tier: str):
     """
     Automated HeyGen v3 UGC Pipeline.
-    Receives product_url from Stripe webhook and initiates avatar video rendering.
+    Triggers avatar video rendering upon receiving product_url from Stripe webhooks.
     """
     if MOCK_MODE or not HEYGEN_API_KEY:
         print(f"[Video Pipeline - MOCK] Logging order for: {product_url} ({tier})")
@@ -29,13 +29,26 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # Valid HeyGen v3 Flat Schema
+    # Valid HeyGen v3 Schema
     payload = {
-        "type": "avatar",
-        "avatar_id": "Daisy-inic-20220818",
-        "script": script_text,
-        "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54",
-        "aspect_ratio": "9:16"
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "avatar",
+                    "avatar_id": "Daisy-inic-20220818",
+                    "avatar_style": "normal"
+                },
+                "voice": {
+                    "type": "text",
+                    "input_text": script_text,
+                    "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54"
+                }
+            }
+        ],
+        "dimension": {
+            "width": 1080,
+            "height": 1920
+        }
     }
 
     try:
