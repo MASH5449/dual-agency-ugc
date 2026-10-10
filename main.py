@@ -37,12 +37,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
-# X / Twitter Credentials (Optional - Gracefully Bypassed If Missing)
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
-X_API_KEY = os.getenv("X_API_KEY", "")
-X_API_SECRET = os.getenv("X_API_SECRET", "")
-X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN", "")
-X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET", "")
 
 # ------------------------------------------------------------------
 # LOGGING & SSE EVENT HELPER
@@ -98,7 +93,6 @@ LeadLoop Fulfillment Engine
     msg.attach(MIMEText(body, 'plain'))
 
     try:
-        # Port 587 with STARTTLS explicitly prevents cloud port-blocking
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
@@ -202,7 +196,6 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
 
         await log_event("Fulfillment Agent", f"Payment received from {customer_email}")
 
-        # Run background fulfillment pipeline
         background_tasks.add_task(pause_instantly_lead, customer_email)
         await log_event("Outreach Agent", f"Lead {customer_email} paused in Instantly")
 
@@ -212,7 +205,7 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "success"}
 
 # ------------------------------------------------------------------
-# HEYGEN WEBHOOK ENDPOINTS (Fixes /webhook-heygen 404 Route Issue)
+# HEYGEN WEBHOOK ENDPOINTS
 # ------------------------------------------------------------------
 @app.post("/webhook/heygen")
 @app.post("/webhook-heygen")
@@ -233,14 +226,13 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
             print(f"INFO:LeadLoop:HeyGen Render Completed. Video URL: {video_url}")
             await log_event("Fulfillment Agent", f"HeyGen Render Completed. Video MP4 generated.", "SUCCESS")
             
-            # Send Email
             background_tasks.add_task(send_fulfillment_email, recipient_email, video_url)
             await log_event("Fulfillment Agent", f"Delivered video MP4 to {recipient_email}")
 
     return {"status": "success"}
 
 # ------------------------------------------------------------------
-# STARTUP EVENT & X AGENT INITIALIZER
+# STARTUP EVENT
 # ------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
@@ -248,10 +240,8 @@ async def startup_event():
     
     if not X_BEARER_TOKEN:
         print("[Agent X] Credentials missing in Railway variables. Worker suspended until keys are added.")
-        await log_event("Agent X", "Credentials missing. Sleeping thread until configured.", "STANDBY")
     else:
         print("[Agent X] Credentials detected! Initializing X/Twitter worker pipeline.")
-        await log_event("Agent X", "Twitter/X Pipeline Worker active.", "READY")
 
 @app.get("/")
 def health_check():
