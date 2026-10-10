@@ -37,7 +37,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "alex@useleadloop.xyz")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 
-BASE_URL = os.getenv("BASE_URL", "[https://your-app.up.railway.app](https://your-app.up.railway.app)")
+BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
 
 stripe.api_key = STRIPE_API_KEY
 
@@ -94,7 +94,7 @@ def stop_instantly_lead(email: str, campaign_id: str):
         logger.warning("Instantly API Key or Campaign ID missing. Skipping auto-pause.")
         return False
         
-  url = "https://api.instantly.ai/api/v2/leads/update-interest-status"
+    url = "https://api.instantly.ai/api/v2/leads/update-interest-status"
     headers = {
         "Authorization": f"Bearer {INSTANTLY_API_KEY}",
         "Content-Type": "application/json"
@@ -122,7 +122,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
     """Selects a random avatar and sends video creation payload to HeyGen."""
     avatar = random.choice(AVATAR_POOL)
     
-   url = "https://api.heygen.com/v2/video/generate"
+    url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -244,7 +244,7 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
         # 1. Update UI Console Feed
         background_tasks.add_task(push_agent_event, "Fulfillment Agent", f"Payment received from {customer_email}")
 
-        # 2. Upgrade 1: Auto-Pause Lead in Instantly
+        # 2. Auto-Pause Lead in Instantly
         if customer_email and INSTANTLY_CAMPAIGN_ID:
             background_tasks.add_task(stop_instantly_lead, customer_email, INSTANTLY_CAMPAIGN_ID)
             background_tasks.add_task(push_agent_event, "Outreach Agent", f"Lead {customer_email} paused in Instantly")
