@@ -16,6 +16,7 @@ ENV PYTHONPATH=/app:/app/agents
 
 EXPOSE 8080
 
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} & \
-    python agents/agent_x.py & \
-    python agents/lead_hunter.py
+# Run background agents in background with &, keep uvicorn in FOREGROUND
+CMD python agents/agent_x.py & \
+    python agents/lead_hunter.py & \
+    uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
