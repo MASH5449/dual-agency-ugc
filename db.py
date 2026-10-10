@@ -4,8 +4,12 @@ Core requirement: **hard dedupe on email and website.** Normalisation happens
 before every insert, and inserts use ``ON CONFLICT DO NOTHING`` so a repeat of
 the same input never creates a second row.
 
-Status lifecycle in step 1: ``new`` -> ``classified``, plus ``failed``.
-Step 2 will extend this with video/dispatch states.
+Status lifecycle: ``new`` -> ``classified`` -> ``scripted`` -> ``video_queued``,
+plus ``failed`` (dispatch states land in a later delegation).
+
+``leads`` is frozen at its eight original columns; ``updated_at`` is added by an
+**idempotent migration** run at startup (see :meth:`Database.migrate_schema`).
+Nothing is ever dropped, renamed or reordered, and existing rows keep working.
 """
 
 from __future__ import annotations
@@ -86,7 +90,26 @@ TIERS = ("quick", "scale", "whitelabel")
 
 STATUS_NEW = "new"
 STATUS_CLASSIFIED = "classified"
+STATUS_SCRIPTED = "scripted"
+STATUS_VIDEO_QUEUED = "video_queued"
 STATUS_FAILED = "failed"
+
+# ---------------------------------------------------------------------------
+# Migrations — additive only, idempotent, safe to run on every start
+# ---------------------------------------------------------------------------
+
+#: Columns added to `leads` *after* the frozen step-1 schema, as
+#: ``(column, ddl, backfill_sql)``. Applied by ``migrate_schema()`` in order;
+#: each entry is skipped when the column is already present, so re-running is a
+#: no-op. Existing columns are never touched.
+ADDITIVE_LEAD_COLUMNS = (
+    # Owner requirement: every row must show when it was last touched.
+    # Backfilled from created_at so no row is ever left with a NULL.
+    ("updated_at", "ALTER TABLE leads ADD COLUMN updated_at TEXT;", None),
+)
+
+#: The columns ``update_lead()`` is allowed to write.
+UPDATABLE_LEAD_FIELDS = ("email", "website", "tier", "video_id", "video_url", "status")
 
 
 def utcnow() -> str:
@@ -174,6 +197,42 @@ class Database:
             for statement in ALL_SCHEMA:
                 conn.execute(statement)
             conn.commit()
+        self.migrate_schema()
+
+    # -- schema introspection / migration ---------------------------------
+    @staticmethod
+    def columns(conn: sqlite3.Connection, table: str = "leads") -> list[str]:
+        """Column names of ``table``, in declared order."""
+        return [str(row[1]) for row in conn.execute(f"PRAGMA table_info({table});")]
+
+    def has_column(
+        self, conn: sqlite3.Connection, column: str, table: str = "leads"
+    ) -> bool:
+        return column in self.columns(conn, table)
+
+    def migrate_schema(self) -> list[str]:
+        """Apply the additive ``leads`` migrations; idempotent.
+
+        Adds ``updated_at`` when missing and backfills it from ``created_at``,
+        then re-runs the backfill so a row written by an older process (or an
+        interrupted run) can never stay NULL. Existing data and the order of the
+        pre-existing columns are untouched. Returns the columns added this run.
+        """
+        added: list[str] = []
+        with self.connect() as conn:
+            present = self.columns(conn)
+            for column, ddl, _ in ADDITIVE_LEAD_COLUMNS:
+                if column in present:
+                    continue
+                conn.execute(ddl)
+                added.append(column)
+            if "updated_at" in self.columns(conn):
+                conn.execute(
+                    "UPDATE leads SET updated_at = created_at "
+                    "WHERE updated_at IS NULL;"
+                )
+            conn.commit()
+        return added
 
     # -- suppression ------------------------------------------------------
     def is_suppressed(self, conn: sqlite3.Connection, email: Any) -> bool:
@@ -217,6 +276,10 @@ class Database:
         owns = conn is None
         conn = conn or self.connect()
         result = InsertResult()
+        # On a database that has already been migrated, fill updated_at at
+        # insert time too, so a brand-new row is never NULL for a reader that
+        # only looks at rows written by this process.
+        with_updated = self.has_column(conn, "updated_at")
         try:
             for item in items:
                 email = normalise_email(item.get("email"))
@@ -229,19 +292,33 @@ class Database:
                     result.skipped += 1
                     continue
 
+                created = item.get("created_at") or utcnow()
+                columns = [
+                    "email",
+                    "website",
+                    "tier",
+                    "video_id",
+                    "video_url",
+                    "status",
+                    "created_at",
+                ]
+                values: list[Any] = [
+                    email,
+                    website,
+                    item.get("tier"),
+                    item.get("video_id"),
+                    item.get("video_url"),
+                    item.get("status") or STATUS_NEW,
+                    created,
+                ]
+                if with_updated:
+                    columns.append("updated_at")
+                    values.append(item.get("updated_at") or created)
+                placeholders = ", ".join("?" for _ in columns)
                 cur = conn.execute(
-                    "INSERT INTO leads (email, website, tier, video_id, video_url, "
-                    "status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT DO NOTHING;",
-                    (
-                        email,
-                        website,
-                        item.get("tier"),
-                        item.get("video_id"),
-                        item.get("video_url"),
-                        item.get("status") or STATUS_NEW,
-                        item.get("created_at") or utcnow(),
-                    ),
+                    f"INSERT INTO leads ({', '.join(columns)}) "
+                    f"VALUES ({placeholders}) ON CONFLICT DO NOTHING;",
+                    tuple(values),
                 )
                 if cur.rowcount > 0:
                     result.inserted += 1
@@ -301,6 +378,95 @@ class Database:
             (lead_id,),
         ).fetchone()
         return dict(row) if row is not None else {}
+
+    # -- stage updates ----------------------------------------------------
+    def update_lead(
+        self,
+        lead_id: int,
+        conn: sqlite3.Connection | None = None,
+        now: str | None = None,
+        **fields: Any,
+    ) -> bool:
+        """Update one lead **through the single code path** every stage uses.
+
+        Always refreshes ``updated_at`` (when the column exists), so any status
+        or tier change is visible to the owner. Only the columns in
+        :data:`UPDATABLE_LEAD_FIELDS` may be written; anything else raises
+        ``ValueError`` rather than silently doing nothing. Nothing is deleted.
+        Returns True when a row was changed.
+        """
+        unknown = sorted(set(fields) - set(UPDATABLE_LEAD_FIELDS))
+        if unknown:
+            raise ValueError(f"cannot update unknown lead field(s): {', '.join(unknown)}")
+        if not fields:
+            raise ValueError("update_lead() needs at least one field to update")
+
+        owns = conn is None
+        conn = conn or self.connect()
+        try:
+            assignments = [f"{name} = ?" for name in fields]
+            values: list[Any] = list(fields.values())
+            if self.has_column(conn, "updated_at"):
+                assignments.append("updated_at = ?")
+                values.append(now or utcnow())
+            values.append(lead_id)
+            cur = conn.execute(
+                f"UPDATE leads SET {', '.join(assignments)} WHERE id = ?;", tuple(values)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            if owns:
+                conn.close()
+
+    def attach_video(
+        self,
+        lead_id: int,
+        video_id: str,
+        video_url: str | None = None,
+        status: str = STATUS_VIDEO_QUEUED,
+        conn: sqlite3.Connection | None = None,
+    ) -> tuple[bool, str]:
+        """Persist a render's ``video_id``/``video_url`` on a lead row.
+
+        ``leads.video_id`` is UNIQUE, so a duplicate render (the provider
+        handing back an id another row already owns) must not corrupt anything:
+        the collision is detected up front and the existing row is left exactly
+        as it was. Returns ``(ok, reason)``.
+        """
+        owns = conn is None
+        conn = conn or self.connect()
+        try:
+            clash = conn.execute(
+                "SELECT id FROM leads WHERE video_id = ? AND id != ? LIMIT 1;",
+                (video_id, lead_id),
+            ).fetchone()
+            if clash is not None:
+                return False, f"video_id {video_id} already belongs to lead {clash['id']}"
+            try:
+                self.update_lead(
+                    lead_id,
+                    conn=conn,
+                    video_id=video_id,
+                    video_url=video_url,
+                    status=status,
+                )
+            except sqlite3.IntegrityError as exc:
+                return False, f"duplicate video_id rejected by UNIQUE ({exc})"
+            return True, "attached"
+        finally:
+            if owns:
+                conn.close()
+
+    def get_lead(self, lead_id: int, conn: sqlite3.Connection | None = None):
+        """Fetch one lead row (``sqlite3.Row``) or None."""
+        owns = conn is None
+        conn = conn or self.connect()
+        try:
+            return conn.execute("SELECT * FROM leads WHERE id = ?;", (lead_id,)).fetchone()
+        finally:
+            if owns:
+                conn.close()
 
     # -- reads ------------------------------------------------------------
     def count(self, conn: sqlite3.Connection | None = None) -> int:
