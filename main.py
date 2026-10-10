@@ -268,3 +268,28 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+# ---------------------------------------------------------------------------
+# Railway ASGI Integration
+# ---------------------------------------------------------------------------
+from fastapi import FastAPI
+
+app = FastAPI(title="LeadLoop Engine")
+
+@app.on_event("startup")
+async def start_leadloop_background_worker():
+    """Starts the LeadLoop background pipeline when Railway boots Uvicorn."""
+    cfg = config_module.load()
+    LOG.info("[LeadLoop] Starting background worker via FastAPI startup event")
+    asyncio.create_task(run_loop(cfg))
+
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    """Healthcheck endpoint for Railway."""
+    cfg = config_module.load()
+    pipeline = Pipeline(cfg)
+    return {
+        "status": "healthy",
+        "service": "LeadLoop Engine",
+        "db_stats": pipeline.status()
+    }
