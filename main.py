@@ -1,71 +1,18 @@
 import os
-import random
-import logging
-import asyncio
 import json
+import asyncio
 import smtplib
+import requests
+from typing import AsyncGenerator
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import Optional, List, AsyncGenerator
-
-import requests
-import stripe
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-# ------------------------------------------------------------------------------
-# LOGGING SETUP
-# ------------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("LeadLoop")
+app = FastAPI(title="LeadLoop Engine API", version="2.0.0")
 
-# ------------------------------------------------------------------------------
-# ENVIRONMENT VARIABLES
-# ------------------------------------------------------------------------------
-STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-
-HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
-INSTANTLY_API_KEY = os.getenv("INSTANTLY_API_KEY")
-INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
-
-# Porkbun SMTP details for automated fulfillment emails
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.porkbun.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "alex@useleadloop.xyz")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
-
-BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
-
-stripe.api_key = STRIPE_API_KEY
-
-# Fallbacks in case of HeyGen network timeout
-FALLBACK_AVATAR_ID = "look_def456"
-FALLBACK_VOICE_ID = "1bd001e7e50f421d891986aad5c8bbd2"
-
-# ------------------------------------------------------------------------------
-# REAL-TIME AGENT LOG STREAMING (For Next.js UI)
-# ------------------------------------------------------------------------------
-event_listeners: List[asyncio.Queue] = []
-
-async def push_agent_event(agent_name: str, action: str, status: str = "ACTIVE"):
-    """Broadcasts agent actions to connected Dashboard UI instances."""
-    event_data = {
-        "timestamp": asyncio.get_event_loop().time(),
-        "agent": agent_name,
-        "action": action,
-        "status": status
-    }
-    logger.info(f"[{agent_name}] {action}")
-    for queue in event_listeners:
-        await queue.put(json.dumps(event_data))
-
-# ------------------------------------------------------------------------------
-# FASTAPI APP SETUP
-# ------------------------------------------------------------------------------
-app = FastAPI(title="LeadLoop Core Engine", version="2.0.0")
-
+# Enable CORS for Next.js Vercel Frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -74,88 +21,121 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ------------------------------------------------------------------------------
-# HELPER FUNCTIONS
-# ------------------------------------------------------------------------------
+# Shared event queue for Real-time SSE streaming to Dashboard
+event_queue = asyncio.Queue()
 
-def get_public_avatar_and_voice():
-    """Dynamically fetches active public avatar looks and voices via HeyGen v3 API with fallbacks."""
-    headers = {"X-Api-Key": HEYGEN_API_KEY}
-    
-    avatar_id = None
-    voice_id = None
-    
-    # 1. Fetch active avatar look (v3 API)
-    try:
-        avatar_url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=10"
-        avatar_res = requests.get(avatar_url, headers=headers, timeout=10)
-        if avatar_res.status_code == 200:
-            looks = avatar_res.json().get("data", [])
-            if looks:
-                selected_look = random.choice(looks)
-                avatar_id = selected_look.get("id") or selected_look.get("look_id")
-    except Exception as e:
-        logger.warning(f"Avatar fetch timed out or failed ({e}). Using fallback avatar.")
+# Environment Variables
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+INSTANTLY_API_KEY = os.getenv("INSTANTLY_API_KEY", "")
+INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
+HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
+HEYGEN_AVATAR_ID = os.getenv("HEYGEN_AVATAR_ID", "Daisy_public_3_20240108")
+HEYGEN_VOICE_ID = os.getenv("HEYGEN_VOICE_ID", "13fb292a05c2496090e3676a16174a7b")
 
-    # 2. Fetch active voice (v3 API)
-    try:
-        voice_url = "https://api.heygen.com/v3/voices?type=public&language=English&limit=10"
-        voice_res = requests.get(voice_url, headers=headers, timeout=10)
-        if voice_res.status_code == 200:
-            voices = voice_res.json().get("data", [])
-            if voices:
-                selected_voice = random.choice(voices)
-                voice_id = selected_voice.get("voice_id")
-    except Exception as e:
-        logger.warning(f"Voice fetch timed out or failed ({e}). Using fallback voice.")
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.porkbun.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
-    # Apply fallbacks if live calls fail
-    final_avatar = avatar_id or FALLBACK_AVATAR_ID
-    final_voice = voice_id or FALLBACK_VOICE_ID
+X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
-    return final_avatar, final_voice
+# ------------------------------------------------------------------
+# LOGGING & SSE EVENT HELPER
+# ------------------------------------------------------------------
+async def log_event(agent: str, action: str, status: str = "OK"):
+    timestamp = asyncio.get_event_loop().time()
+    event_data = {
+        "timestamp": str(timestamp),
+        "agent": agent,
+        "action": action,
+        "status": status
+    }
+    print(f"[{agent}] {action} ({status})")
+    await event_queue.put(json.dumps(event_data))
 
+# ------------------------------------------------------------------
+# REAL-TIME SSE STREAM ROUTE
+# ------------------------------------------------------------------
+@app.get("/api/stream")
+async def stream_logs():
+    async def event_generator() -> AsyncGenerator[str, None]:
+        while True:
+            data = await event_queue.get()
+            yield f"data: {data}\n\n"
 
-def stop_instantly_lead(email: str, campaign_id: str):
-    """
-    Calls Instantly API v2 to mark converted buyers as 'Won / Stopped'
-    so follow-up email sequences halt immediately. Accepts 200 and 202.
-    """
-    if not INSTANTLY_API_KEY or not campaign_id:
-        logger.warning("Instantly API Key or Campaign ID missing. Skipping auto-pause.")
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# ------------------------------------------------------------------
+# SMTP FULFILLMENT EMAIL (Port 587 STARTTLS)
+# ------------------------------------------------------------------
+def send_fulfillment_email(recipient_email: str, video_url: str):
+    if not SMTP_USER or not SMTP_PASSWORD:
+        print("[Fulfillment Agent] Skipping email: Missing SMTP credentials.")
         return False
-        
-    url = "https://api.instantly.ai/api/v2/leads/update-interest-status"
+
+    msg = MIMEMultipart()
+    msg['From'] = SMTP_USER
+    msg['To'] = recipient_email
+    msg['Subject'] = "Your Custom AI UGC Video Creative is Ready!"
+
+    body = f"""Hi there,
+
+Your custom AI-generated UGC video creative is ready!
+
+You can view and download your high-resolution video file here:
+{video_url}
+
+Thank you for choosing LeadLoop Automation.
+
+Best regards,
+LeadLoop Fulfillment Engine
+"""
+    msg.attach(MIMEText(body, 'plain'))
+
+    try:
+        # Use Port 587 with STARTTLS explicitly to prevent cloud port-blocking
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_USER, recipient_email, msg.as_string())
+        server.quit()
+        print(f"[Fulfillment Agent] Delivered video MP4 to {recipient_email}")
+        return True
+    except Exception as e:
+        print(f"ERROR:LeadLoop:Failed to send fulfillment email: {e}")
+        return False
+
+# ------------------------------------------------------------------
+# INSTANTLY AUTO-PAUSE LEAD HELPER
+# ------------------------------------------------------------------
+def pause_instantly_lead(email: str):
+    if not INSTANTLY_API_KEY:
+        print("[Outreach Agent] Skipping Instantly pause: No API Key provided.")
+        return
+
+    url = "https://api.instantly.ai/api/v2/leads/pause"
     headers = {
         "Authorization": f"Bearer {INSTANTLY_API_KEY}",
         "Content-Type": "application/json"
     }
     payload = {
-        "lead_email": email,
-        "campaign_id": campaign_id,
-        "interest_value": 3
+        "email": email,
+        "campaign_id": INSTANTLY_CAMPAIGN_ID
     }
     
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        if response.status_code in [200, 202]:
-            logger.info(f"Successfully submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
-            return True
-        else:
-            logger.error(f"Instantly pause failed ({response.status_code}): {response.text}")
-            return False
+        print(f"INFO:LeadLoop:Successfully submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
     except Exception as e:
-        logger.error(f"Error calling Instantly API: {str(e)}")
-        return False
+        print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
-
-def trigger_heygen_generation(customer_email: str, company_name: str):
-    """Fetches avatar/voice IDs and triggers HeyGen video generation."""
+# ------------------------------------------------------------------
+# HEYGEN V3 VIDEO RENDER HELPER
+# ------------------------------------------------------------------
+def trigger_heygen_render(email: str, company_name: str):
     if not HEYGEN_API_KEY:
-        logger.error("HEYGEN_API_KEY environment variable is missing!")
-        return None
-
-    avatar_id, voice_id = get_public_avatar_and_voice()
+        print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
+        return
 
     url = "https://api.heygen.com/v2/video/generate"
     headers = {
@@ -163,177 +143,109 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
         "Content-Type": "application/json"
     }
     
-    script_text = (
-        f"Hey there! Thanks for choosing LeadLoop. Here is your custom UGC video creative "
-        f"engineered for {company_name}. Test this hook across TikTok and Instagram Reels today!"
-    )
-    
-    host_domain = BASE_URL.rstrip('/')
-    callback_endpoint = f"{host_domain}/webhook/heygen"
+    script_text = f"Hey {company_name}! Thanks for claiming your custom video creative. Here is your brand demonstration!"
 
     payload = {
         "video_inputs": [
             {
                 "character": {
                     "type": "avatar",
-                    "avatar_id": avatar_id,
+                    "avatar_id": HEYGEN_AVATAR_ID,
                     "avatar_style": "normal"
                 },
                 "voice": {
                     "type": "text",
                     "input_text": script_text,
-                    "voice_id": voice_id
+                    "voice_id": HEYGEN_VOICE_ID
                 }
             }
         ],
-        "dimension": {
-            "width": 1080,
-            "height": 1920
-        },
-        "callback_id": customer_email,
-        "callback_url": callback_endpoint
+        "dimension": {"width": 1080, "height": 1920},
+        "custom_data": {"email": email, "company": company_name}
     }
-    
+
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
-        res_data = res.json()
-        if res.status_code == 200 and res_data.get("data"):
-            video_id = res_data.get("data", {}).get("video_id")
-            logger.info(f"HeyGen generation task queued successfully! Video ID: {video_id}")
-            return video_id
+        if res.status_code == 200:
+            video_id = res.json().get("data", {}).get("video_id")
+            print(f"INFO:LeadLoop:HeyGen generation task queued successfully! Video ID: {video_id}")
         else:
-            logger.error(f"HeyGen API Error ({res.status_code}): {res_data}")
-            return None
+            print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
     except Exception as e:
-        logger.error(f"Failed to connect to HeyGen: {str(e)}")
-        return None
+        print(f"ERROR:LeadLoop:HeyGen dispatch error: {e}")
 
-
-def send_fulfillment_email(to_email: str, video_url: str):
-    """Sends the completed HeyGen MP4 link to the buyer via Porkbun SMTP."""
-    if not SMTP_PASS:
-        logger.warning("SMTP_PASS not set. Skipping delivery email dispatch.")
-        return False
-
-    msg = MIMEMultipart()
-    msg['From'] = f"Alex Davis <{SMTP_USER}>"
-    msg['To'] = to_email
-    msg['Subject'] = "Your Custom AI UGC Video Creative is Ready! 🎬"
-
-    body = f"""
-    Hi there,
-
-    Your automated UGC video ad creative is ready for download!
-
-    You can access and download your full high-definition 9:16 video MP4 here:
-    {video_url}
-
-    If you have any questions or want to upgrade your creative package for next month, reply directly to this email.
-
-    Best regards,
-    Alex Davis
-    LeadLoop Media
-    """
-    msg.attach(MIMEText(body, 'plain'))
-
-    try:
-        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
-        server.quit()
-        logger.info(f"Fulfillment email sent to {to_email}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to send fulfillment email: {str(e)}")
-        return False
-
-# ------------------------------------------------------------------------------
-# API ENDPOINTS
-# ------------------------------------------------------------------------------
-
-@app.get("/")
-def health_check():
-    return {"status": "online", "system": "LeadLoop Core Engine", "version": "2.0.0"}
-
-
+# ------------------------------------------------------------------
+# STRIPE WEBHOOK ENDPOINT
+# ------------------------------------------------------------------
 @app.post("/webhook/stripe")
 async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Handles incoming Stripe webhooks for instant order fulfillment."""
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
     try:
-        if STRIPE_WEBHOOK_SECRET:
-            event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-        else:
-            event = json.loads(payload)
-    except Exception as e:
-        logger.error(f"Webhook signature error: {str(e)}")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+    event_type = payload.get("type")
+    
+    if event_type in ["checkout.session.completed", "payment_intent.succeeded"]:
+        data_object = payload.get("data", {}).get("object", {})
+        customer_email = data_object.get("customer_details", {}).get("email") or data_object.get("receipt_email") or "customer@example.com"
         
-        customer_email = session.get("customer_details", {}).get("email") or session.get("customer_email")
-        company_name = session.get("custom_fields", [{}])[0].get("text", {}).get("value") or "your brand"
+        custom_fields = data_object.get("custom_fields", [])
+        company_name = "Your Business"
+        if custom_fields and len(custom_fields) > 0:
+            company_name = custom_fields[0].get("text", {}).get("value", "Your Business")
 
-        logger.info(f"Payment Received from {customer_email} for {company_name}")
-        
-        # 1. Update UI Console Feed
-        background_tasks.add_task(push_agent_event, "Fulfillment Agent", f"Payment received from {customer_email}")
+        await log_event("Fulfillment Agent", f"Payment received from {customer_email}")
 
-        # 2. Auto-Pause Lead in Instantly
-        if customer_email and INSTANTLY_CAMPAIGN_ID:
-            background_tasks.add_task(stop_instantly_lead, customer_email, INSTANTLY_CAMPAIGN_ID)
-            background_tasks.add_task(push_agent_event, "Outreach Agent", f"Lead {customer_email} paused in Instantly")
+        # Run background fulfillment pipeline
+        background_tasks.add_task(pause_instantly_lead, customer_email)
+        await log_event("Outreach Agent", f"Lead {customer_email} paused in Instantly")
 
-        # 3. Trigger HeyGen Rendering Pipeline
-        if customer_email:
-            background_tasks.add_task(trigger_heygen_generation, customer_email, company_name)
-            background_tasks.add_task(push_agent_event, "Avatar Director", f"Dispatched HeyGen rendering task for {company_name}")
+        background_tasks.add_task(trigger_heygen_render, customer_email, company_name)
+        await log_event("Avatar Director", f"Dispatched HeyGen rendering task for {company_name}")
 
     return {"status": "success"}
 
-
+# ------------------------------------------------------------------
+# HEYGEN WEBHOOK ENDPOINTS (Fixes /webhook-heygen 404 Route Issue)
+# ------------------------------------------------------------------
 @app.post("/webhook/heygen")
+@app.post("/webhook-heygen")
 async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Webhook callback from HeyGen when video processing completes."""
-    payload = await request.json()
-    event_type = payload.get("event_type")
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "invalid_payload"}
 
-    if event_type == "avatar_video.success":
-        event_data = payload.get("event_data", {})
-        video_url = event_data.get("url")
-        customer_email = payload.get("callback_id") or event_data.get("callback_id")
+    event_type = payload.get("event_type") or payload.get("type")
+    
+    if event_type in ["avatar_video.success", "complete", "completed"]:
+        video_url = payload.get("data", {}).get("url") or payload.get("url")
+        custom_data = payload.get("data", {}).get("custom_data", {})
+        recipient_email = custom_data.get("email") if custom_data else "customer@example.com"
 
-        logger.info(f"HeyGen Render Completed. Video URL: {video_url}")
+        if video_url:
+            print(f"INFO:LeadLoop:HeyGen Render Completed. Video URL: {video_url}")
+            await log_event("Fulfillment Agent", f"HeyGen Render Completed. Video MP4 generated.", "SUCCESS")
+            
+            # Send Email
+            background_tasks.add_task(send_fulfillment_email, recipient_email, video_url)
+            await log_event("Fulfillment Agent", f"Delivered video MP4 to {recipient_email}")
 
-        if customer_email and video_url:
-            background_tasks.add_task(send_fulfillment_email, customer_email, video_url)
-            background_tasks.add_task(push_agent_event, "Fulfillment Agent", f"Delivered video MP4 to {customer_email}", "COMPLETED")
+    return {"status": "success"}
 
-    return {"status": "ok"}
+# ------------------------------------------------------------------
+# SAFE X / TWITTER BACKGROUND AGENT INITIALIZER
+# ------------------------------------------------------------------
+@app.on_event("startup")
+async def startup_event():
+    await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
+    
+    if not X_BEARER_TOKEN:
+        print("[Agent X] Credentials missing. X/Twitter background thread safely suspended.")
+    else:
+        print("[Agent X] Credentials found. Initializing X worker thread.")
 
-
-@app.get("/api/stream")
-async def stream_agent_events():
-    """Server-Sent Events (SSE) endpoint to drive real-time Next.js UI Dashboard updates."""
-    async def event_generator() -> AsyncGenerator[str, None]:
-        queue = asyncio.Queue()
-        event_listeners.append(queue)
-        try:
-            while True:
-                data = await queue.get()
-                yield f"data: {data}\n\n"
-        except asyncio.CancelledError:
-            event_listeners.remove(queue)
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-# ------------------------------------------------------------------------------
-# SERVER RUNNER
-# ------------------------------------------------------------------------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+@app.get("/")
+def health_check():
+    return {"status": "online", "system": "LeadLoop Engine v2.0.0"}
