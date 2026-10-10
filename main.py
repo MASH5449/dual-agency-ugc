@@ -42,13 +42,13 @@ BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
 stripe.api_key = STRIPE_API_KEY
 
 # ------------------------------------------------------------------------------
-# UPDATED AVATAR POOL WITH VALID HEYGEN VOICE IDs
+# AVATAR POOL
 # ------------------------------------------------------------------------------
 AVATAR_POOL = [
-    {"name": "Daisy", "avatar_id": "Daisy-Theresa-20220818", "voice_id": "2d5b0e6cf36f460aa7fc37e3234c2d32"},
-    {"name": "Josh", "avatar_id": "Josh-inTech-20220820", "voice_id": "1bd001e7e50f421d891986aad5158bc6"},
-    {"name": "Kristin", "avatar_id": "Kristin-inChair-20220820", "voice_id": "2d5b0e6cf36f460aa7fc37e3234c2d32"},
-    {"name": "Tyler", "avatar_id": "Tyler-inHoodie-20220820", "voice_id": "1bd001e7e50f421d891986aad5158bc6"}
+    {"name": "Daisy", "avatar_id": "Daisy-Theresa-20220818", "gender": "female"},
+    {"name": "Josh", "avatar_id": "Josh-inTech-20220820", "gender": "male"},
+    {"name": "Kristin", "avatar_id": "Kristin-inChair-20220820", "gender": "female"},
+    {"name": "Tyler", "avatar_id": "Tyler-inHoodie-20220820", "gender": "male"}
 ]
 
 # ------------------------------------------------------------------------------
@@ -85,6 +85,21 @@ app.add_middleware(
 # HELPER FUNCTIONS
 # ------------------------------------------------------------------------------
 
+def get_public_voice_id(gender: str = "female") -> str:
+    """Queries HeyGen live API for a valid active public voice ID."""
+    url = f"https://api.heygen.com/v3/voices?type=public&language=English&gender={gender}&limit=1"
+    headers = {"X-Api-Key": HEYGEN_API_KEY}
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            if data and len(data) > 0:
+                return data[0]["voice_id"]
+    except Exception as e:
+        logger.warning(f"Could not fetch dynamic voice ID: {e}")
+    return "1bd001e7e50f421d891986aad5c8bbd2"
+
+
 def stop_instantly_lead(email: str, campaign_id: str):
     """
     Calls Instantly API v2 to mark converted buyers as 'Won / Stopped'
@@ -102,7 +117,7 @@ def stop_instantly_lead(email: str, campaign_id: str):
     payload = {
         "lead_email": email,
         "campaign_id": campaign_id,
-        "interest_value": 3  # Status 3 = Won / Pause Campaign Sequences
+        "interest_value": 3
     }
     
     try:
@@ -119,8 +134,9 @@ def stop_instantly_lead(email: str, campaign_id: str):
 
 
 def trigger_heygen_generation(customer_email: str, company_name: str):
-    """Selects a random avatar and sends video creation payload to HeyGen."""
+    """Selects an avatar, dynamically fetches an active voice ID, and generates the video."""
     avatar = random.choice(AVATAR_POOL)
+    voice_id = get_public_voice_id(avatar.get("gender", "female"))
     
     url = "https://api.heygen.com/v2/video/generate"
     headers = {
@@ -144,7 +160,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
                 "voice": {
                     "type": "text",
                     "input_text": script_text,
-                    "voice_id": avatar["voice_id"]
+                    "voice_id": voice_id
                 }
             }
         ],
