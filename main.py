@@ -1,67 +1,146 @@
 import os
-import sys
-import asyncio
 import stripe
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+import requests
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Request, HTTPException
+from apscheduler.schedulers.background import BackgroundScheduler
+from video_pipeline import generate_video
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+app = FastAPI(title="Dual-Agency Backend Engine")
 
-from agents.stripe_handler import process_checkout_session
-from agents.apollo_agent import fetch_leads
-from agents.instantly_agent import push_leads_to_campaign
-from agents.arcads_agent import generate_ugc_video
+# Background Scheduler for Upsell Emails
+scheduler = BackgroundScheduler()
+scheduler.start()
 
-app = FastAPI(title="Dual Agency UGC Engine")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+stripe.api_key = STRIPE_SECRET_KEY
 
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+INSTANTLY_API_KEY = os.getenv("INSTANTLY_API_KEY")
+STRIPE_500_LINK = os.getenv("STRIPE_500_LINK")
+STRIPE_1000_LINK = os.getenv("STRIPE_1000_LINK")
 
-async def execute_autonomous_workflow(order_data: dict):
-    """
-    Executes the Dual-Agency pipeline based on tier in an async context.
-    """
-    amount = order_data.get("amount", 0)
-    customer_email = order_data.get("customer_email")
-    print(f"[Engine] Triggering pipeline for {customer_email} (${amount})")
+def send_upsell_email(customer_email: str, upsell_link: str, offer_name: str):
+    """Enrolls customer into Instantly campaign 72 hours post-purchase."""
+    url = "https://api.instantly.ai/api/v1/lead/add"
+    payload = {
+        "api_key": INSTANTLY_API_KEY,
+        "email": customer_email,
+        "custom_variables": {
+            "upsell_link": upsell_link,
+            "offer_name": offer_name
+        }
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+        print(f"[Upsell Engine] Enrolled {customer_email} into 72hr sequence for {offer_name}")
+    except Exception as e:
+        print(f"[Upsell Engine] Error enrolling {customer_email}: {e}")
 
-    # Tier 1 & 2: Lead Acquisition + Email Campaign Injection
-    if amount in [150, 500]:
-        leads = fetch_leads(limit=25 if amount == 150 else 100)
-        if leads:
-            push_leads_to_campaign(campaign_id="default_campaign_id", leads=leads)
-
-    # Tier 3 & 4: UGC Video Generation Pipeline
-    elif amount in [1000, 2500]:
-        script = f"Transform your business with top tier UGC ads. Designed for {customer_email}."
-        await generate_ugc_video(script_text=script)
+def parse_webhook_payload(request_body: bytes, sig_header: str, secret: str):
+    """Validates Stripe signature against specific endpoint secret."""
+    try:
+        if secret:
+            return stripe.Webhook.construct_event(request_body, sig_header, secret)
+        return stripe.Event.construct_from(stripe.json.loads(request_body), stripe.api_key)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook Validation Error: {e}")
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "agency": "Dual UGC Autonomous Infrastructure"}
+    return {"status": "Dual-Agency Backend Online", "option": "B - Dedicated Endpoints"}
 
-@app.post("/webhook/stripe")
-async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
+# --- ENDPOINT 1: $150 Fast-Track Offer ---
+@app.post("/webhook-quick")
+async def webhook_quick(request: Request):
+    body = await request.body()
     sig_header = request.headers.get("stripe-signature")
-    payload = await request.body()
-
-    # If signature header is present AND secret is set, verify with Stripe
-    if sig_header and STRIPE_WEBHOOK_SECRET:
-        try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, STRIPE_WEBHOOK_SECRET
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Webhook signature error: {str(e)}")
-    else:
-        # Fall back to raw JSON parsing for testing
-        event = await request.json()
-
-    if event.get("type") == "checkout.session.completed":
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET_QUICK")
+    
+    event = parse_webhook_payload(body, sig_header, secret)
+    
+    if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        order = process_checkout_session(session)
-        background_tasks.add_task(execute_autonomous_workflow, order)
+        customer_email = session.get("customer_details", {}).get("email")
+        
+        custom_fields = session.get("custom_fields", [])
+        product_url = "https://example.com"
+        for field in custom_fields:
+            if field.get("label", {}).get("custom") == "Product URL" or field.get("key") == "producturl":
+                product_url = field.get("text", {}).get("value") or product_url
 
-    return {"status": "success", "message": "Event processed successfully"}
+        print(f"[Webhook Quick] Order received from {customer_email} for URL: {product_url}")
+        
+        # 1. Trigger $150 Video Pipeline
+        generate_video(product_url, tier="quick")
+        
+        # 2. Schedule 72-hour Upsell Email ($500 Bundle)
+        run_date = datetime.now() + timedelta(hours=72)
+        scheduler.add_job(
+            send_upsell_email, 
+            'date', 
+            run_date=run_date, 
+            args=[customer_email, STRIPE_500_LINK, "Growth Ad Bundle ($500)"]
+        )
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    return {"status": "success"}
+
+# --- ENDPOINT 2: $500 Growth Bundle ---
+@app.post("/webhook-scale")
+async def webhook_scale(request: Request):
+    body = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET_SCALE")
+    
+    event = parse_webhook_payload(body, sig_header, secret)
+    
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        customer_email = session.get("customer_details", {}).get("email")
+        
+        custom_fields = session.get("custom_fields", [])
+        product_url = "https://example.com"
+        for field in custom_fields:
+            if field.get("label", {}).get("custom") == "Product URL" or field.get("key") == "producturl":
+                product_url = field.get("text", {}).get("value") or product_url
+
+        print(f"[Webhook Scale] Order received from {customer_email} for URL: {product_url}")
+
+        # 1. Trigger $500 Video Pipeline (15 Concept Variations)
+        generate_video(product_url, tier="scale")
+        
+        # 2. Schedule 72-hour Upsell Email ($1,000/mo Retainer)
+        run_date = datetime.now() + timedelta(hours=72)
+        scheduler.add_job(
+            send_upsell_email, 
+            'date', 
+            run_date=run_date, 
+            args=[customer_email, STRIPE_1000_LINK, "Monthly UGC Retainer ($1,000/mo)"]
+        )
+
+    return {"status": "success"}
+
+# --- ENDPOINT 3: $2,500 Agency Whitelabel ---
+@app.post("/webhook-whitelabel")
+async def webhook_whitelabel(request: Request):
+    body = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET_WHITELABEL")
+    
+    event = parse_webhook_payload(body, sig_header, secret)
+    
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        customer_email = session.get("customer_details", {}).get("email")
+        
+        custom_fields = session.get("custom_fields", [])
+        agency_name = "Whitelabel Partner"
+        for field in custom_fields:
+            if "Agency" in field.get("label", {}).get("custom", ""):
+                agency_name = field.get("text", {}).get("value") or agency_name
+
+        print(f"[Webhook Whitelabel] Order received from {agency_name} ({customer_email})")
+        
+        # Trigger $2,500 Whitelabel Pipeline (60 Variations)
+        generate_video("https://example.com", tier="whitelabel")
+
+    return {"status": "success"}
