@@ -1,0 +1,87 @@
+[
+  {
+    "email": "maya.chen@northwindboutique.example.com",
+    "website": "https://northwindboutique.example.com",
+    "company": "Northwind Boutique",
+    "employees": 6,
+    "revenue": 250000,
+    "industry": "Retail",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - fictional company, no real contact"
+  },
+  {
+    "email": "MAYA.CHEN@NorthwindBoutique.Example.COM",
+    "website": "https://www.duplicate-case.example.org/",
+    "company": "Northwind Boutique (case duplicate)",
+    "employees": 6,
+    "revenue": 250000,
+    "industry": "Retail",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - duplicate email, must be skipped"
+  },
+  {
+    "email": "dev.patel@scalebrand.example.com",
+    "website": "http://www.ScaleBrand.example.com/",
+    "company": "ScaleBrand",
+    "employees": 85,
+    "revenue": 6500000,
+    "industry": "Consumer electronics",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - fictional company, no real contact"
+  },
+  {
+    "email": "ops@different-email.example.net",
+    "website": "scalebrand.example.com",
+    "company": "ScaleBrand (website duplicate)",
+    "employees": 85,
+    "revenue": 6500000,
+    "industry": "Consumer electronics",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - duplicate website, must be skipped"
+  },
+  {
+    "email": "anna@lumen-agency.example.com",
+    "website": "https://lumen-agency.example.com",
+    "company": "Lumen Agency",
+    "employees": 40,
+    "revenue": 3000000,
+    "industry": "Marketing services",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - fictional company, no real contact"
+  },
+  {
+    "email": "ben@megacorp.example.com",
+    "website": "megacorp.example.com",
+    "company": "MegaCorp Holdings",
+    "employees": 4000,
+    "revenue": 90000000,
+    "industry": "Consumer goods",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - fictional company, no real contact"
+  },
+  {
+    "email": "carla@override-co.example.com",
+    "website": "https://override-co.example.com",
+    "company": "Override Co",
+    "employees": 3,
+    "revenue": 100000,
+    "industry": "Retail",
+    "tier": "whitelabel",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - explicit tier override"
+  },
+  {
+    "email": "not-an-email-at-all",
+    "website": "https://invalid.example.com",
+    "company": "Invalid Email Ltd",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - invalid email, must be skipped"
+  },
+  {
+    "email": "dave@invalid-website.example.com",
+    "website": "not a real url",
+    "company": "Invalid Website Ltd",
+    "source": "sample_batch",
+    "lawful_basis": "sample fixture - invalid website, must be skipped"
+  }
+]
