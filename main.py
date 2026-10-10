@@ -52,24 +52,28 @@ def health_check():
 # --- ENDPOINT 1: $150 Fast-Track Offer ---
 @app.post("/webhook-quick")
 async def webhook_quick(request: Request):
-    body = await request.body()
+    payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     secret = os.getenv("STRIPE_WEBHOOK_SECRET_QUICK")
-    
-    event = parse_webhook_payload(body, sig_header, secret)
-    
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, secret)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
+
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        customer_email = session.get("customer_details", {}).get("email")
-        
-        custom_fields = session.get("custom_fields", [])
-        product_url = "https://example.com"
-        for field in custom_fields:
-            if field.get("label", {}).get("custom") == "Product URL" or field.get("key") == "producturl":
-                product_url = field.get("text", {}).get("value") or product_url
+        tier = session.get("metadata", {}).get("tier", "quick")
 
-        print(f"[Webhook Quick] Order received from {customer_email} for URL: {product_url}")
-        
+        if tier != "quick":
+            print(f"[Webhook Quick] Ignored event for tier: '{tier}'")
+            return {"status": "ignored", "reason": f"Tier is {tier}"}
+
+        print(f"[Webhook Quick] Processing Quick order for {session.get('customer_details', {}).get('email')}")
+        # Keep your existing pipeline call here:
+        execute_video_pipeline(session, tier="quick")
+
+    return {"status": "success"}
         # 1. Trigger $150 Video Pipeline
         generate_video(product_url, tier="quick")
         
@@ -87,23 +91,28 @@ async def webhook_quick(request: Request):
 # --- ENDPOINT 2: $500 Growth Bundle ---
 @app.post("/webhook-scale")
 async def webhook_scale(request: Request):
-    body = await request.body()
+    payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     secret = os.getenv("STRIPE_WEBHOOK_SECRET_SCALE")
-    
-    event = parse_webhook_payload(body, sig_header, secret)
-    
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, secret)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
+
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        customer_email = session.get("customer_details", {}).get("email")
-        
-        custom_fields = session.get("custom_fields", [])
-        product_url = "https://example.com"
-        for field in custom_fields:
-            if field.get("label", {}).get("custom") == "Product URL" or field.get("key") == "producturl":
-                product_url = field.get("text", {}).get("value") or product_url
+        tier = session.get("metadata", {}).get("tier", "scale")
 
-        print(f"[Webhook Scale] Order received from {customer_email} for URL: {product_url}")
+        if tier != "scale":
+            print(f"[Webhook Scale] Ignored event for tier: '{tier}'")
+            return {"status": "ignored", "reason": f"Tier is {tier}"}
+
+        print(f"[Webhook Scale] Processing Scale order for {session.get('customer_details', {}).get('email')}")
+        # Keep your existing pipeline call here:
+        execute_video_pipeline(session, tier="scale")
+
+    return {"status": "success"}
 
         # 1. Trigger $500 Video Pipeline (15 Concept Variations)
         generate_video(product_url, tier="scale")
@@ -122,24 +131,28 @@ async def webhook_scale(request: Request):
 # --- ENDPOINT 3: $2,500 Agency Whitelabel ---
 @app.post("/webhook-whitelabel")
 async def webhook_whitelabel(request: Request):
-    body = await request.body()
+    payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     secret = os.getenv("STRIPE_WEBHOOK_SECRET_WHITELABEL")
-    
-    event = parse_webhook_payload(body, sig_header, secret)
-    
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, secret)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
+
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        customer_email = session.get("customer_details", {}).get("email")
-        
-        custom_fields = session.get("custom_fields", [])
-        agency_name = "Whitelabel Partner"
-        for field in custom_fields:
-            if "Agency" in field.get("label", {}).get("custom", ""):
-                agency_name = field.get("text", {}).get("value") or agency_name
+        tier = session.get("metadata", {}).get("tier", "whitelabel")
 
-        print(f"[Webhook Whitelabel] Order received from {agency_name} ({customer_email})")
-        
+        if tier != "whitelabel":
+            print(f"[Webhook Whitelabel] Ignored event for tier: '{tier}'")
+            return {"status": "ignored", "reason": f"Tier is {tier}"}
+
+        print(f"[Webhook Whitelabel] Processing Whitelabel order for {session.get('customer_details', {}).get('email')}")
+        # Keep your existing pipeline call here:
+        execute_video_pipeline(session, tier="whitelabel")
+
+    return {"status": "success"}
         # Trigger $2,500 Whitelabel Pipeline (60 Variations)
         generate_video("https://example.com", tier="whitelabel")
 
