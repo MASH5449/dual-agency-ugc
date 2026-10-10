@@ -70,8 +70,15 @@ async def webhook_quick(request: Request):
             return {"status": "ignored", "reason": f"Tier is {tier}"}
 
         print(f"[Webhook Quick] Processing Quick order for {session.get('customer_details', {}).get('email')}")
-        # Keep your existing pipeline call here:
-        execute_video_pipeline(session, tier="quick")
+        
+        # Extract product URL from custom fields or fallback
+        custom_fields = session.get("custom_fields", [])
+        product_url = "N/A"
+        for field in custom_fields:
+            if field.get("type") == "text":
+                product_url = field.get("text", {}).get("value", "N/A")
+
+        generate_video(product_url, tier="quick")
 
     return {"status": "success"}
         # 1. Trigger $150 Video Pipeline
