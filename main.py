@@ -47,17 +47,14 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 AVATAR_ROSTER = {
     "skincare_ugc_1": {
         "avatar_id": "8fe1340be40d453b855378de493bd42f",
-        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
         "name": "Skincare UGC Specialist #1"
     },
     "skincare_ugc_2": {
         "avatar_id": "1a195cfcbcbb4d47b1a0bb9714f081e5",
-        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
         "name": "Beauty & Cosmetics Pitcher #2"
     },
     "skincare_ugc_3": {
         "avatar_id": "fade5ca456604426ad66bcc97d24ddf9",
-        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
         "name": "Brand Founder Representative #3"
     }
 }
@@ -159,7 +156,7 @@ def pause_instantly_lead(email: str):
     
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"INFO:LeadLoop:Successfully submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
+        print(f"INFO:LeadLoop:Submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
     except Exception as e:
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
@@ -180,7 +177,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
 
     print(f"[Avatar Director] Dispatching render with actor: {selected_actor['name']}")
 
-    url = "https://api.heygen.com/v2/video/generate"
+    url = "https://api.heygen.com/v3/videos"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -198,8 +195,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
                 },
                 "voice": {
                     "type": "text",
-                    "input_text": script_text,
-                    "voice_id": selected_actor["voice_id"]
+                    "input_text": script_text
                 }
             }
         ],
@@ -295,3 +291,4 @@ async def startup_event():
 @app.get("/")
 def health_check():
     return {"status": "online", "system": "LeadLoop Engine v2.0.0", "stored_leads": len(leads_db)}
+Re-Test Command
