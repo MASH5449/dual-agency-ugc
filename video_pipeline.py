@@ -7,8 +7,8 @@ MOCK_MODE = os.getenv("MOCK_MODE", "false").lower() == "true"
 
 def generate_video(product_url: str, tier: str):
     """
-    Automated HeyGen v3 UGC pipeline.
-    Receives product_url from Stripe checkout and renders vertical UGC videos.
+    Automated HeyGen v3 UGC Pipeline.
+    Receives product_url from Stripe webhook and initiates avatar video rendering.
     """
     if MOCK_MODE or not HEYGEN_API_KEY:
         print(f"[Video Pipeline - MOCK] Logging order for: {product_url} ({tier})")
@@ -18,7 +18,6 @@ def generate_video(product_url: str, tier: str):
             "product_url": product_url
         }
 
-    # HeyGen v3 API Endpoint
     url = "https://api.heygen.com/v3/videos"
     headers = {
         "x-api-key": HEYGEN_API_KEY,
@@ -30,8 +29,9 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # Clean v3 Payload (omits broken voice_id to use avatar default voice)
+    # HeyGen v3 Schema with top-level 'type': 'avatar' discriminator
     payload = {
+        "type": "avatar",
         "video_inputs": [
             {
                 "character": {
@@ -52,7 +52,7 @@ def generate_video(product_url: str, tier: str):
     }
 
     try:
-        print(f"[HeyGen v3 Pipeline] Triggering video generation for: {product_url}")
+        print(f"[HeyGen v3 Pipeline] Triggering video generation for: {product_url} ({tier} tier)")
         response = requests.post(url, json=payload, headers=headers, timeout=30)
 
         if response.status_code in [200, 201]:
