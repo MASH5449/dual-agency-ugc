@@ -9,13 +9,15 @@ import logging
 import signal
 import sys
 import os
+import random
 from typing import Any
 
-# FastAPI & Stripe Imports
+# Network & Web Framework
+import requests
 import stripe
 from fastapi import FastAPI, Request, HTTPException, Header, BackgroundTasks
 
-# Local Imports
+# Local Modules
 import config as config_module
 from agents.base import configure_logging
 from agents.classifier_agent import ClassifierAgent
@@ -28,6 +30,16 @@ from db import Database
 #: Log tag for the pipeline driver.
 DRIVER_TAG = "[LeadLoop]"
 LOG = logging.getLogger(DRIVER_TAG)
+
+# ---------------------------------------------------------------------------
+# Dynamic HeyGen UGC Avatar Pool
+# ---------------------------------------------------------------------------
+HEYGEN_AVATARS = [
+    "Daisy-CustomerSupport-public",
+    "josh_lite3_20230714",
+    "Kristin_public_3_20240108",
+    "Tyler-incamera-20240408"
+]
 
 # ---------------------------------------------------------------------------
 # Pipeline
@@ -69,7 +81,7 @@ class Pipeline:
             LOG.error("classifier stage failed (%s: %s) - continuing", type(exc).__name__, exc)
             summary["classify"] = {"error": f"{type(exc).__name__}: {exc}"}
 
-        # Stage 3 — script generation (persists one JSON per lead).
+        # Stage 3 — script generation.
         try:
             script_agent = ScriptAgent(self.cfg, self.db)
             summary["script"] = script_agent.run_once()
@@ -77,7 +89,7 @@ class Pipeline:
             LOG.error("script stage failed (%s: %s) - continuing", type(exc).__name__, exc)
             summary["script"] = {"error": f"{type(exc).__name__}: {exc}"}
 
-        # Stage 4 — queue a render per scripted lead through the provider.
+        # Stage 4 — queue render.
         try:
             video_agent = VideoQueueAgent(self.cfg, self.db)
             summary["video"] = video_agent.run_once()
@@ -96,7 +108,7 @@ class Pipeline:
 
 
 # ---------------------------------------------------------------------------
-# Modes
+# Modes & Execution Drivers
 # ---------------------------------------------------------------------------
 def log_startup(cfg) -> None:
     LOG.info("starting: %s", cfg.summary())
@@ -201,6 +213,49 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ---------------------------------------------------------------------------
+# HeyGen Auto-Fulfillment Helper
+# ---------------------------------------------------------------------------
+def trigger_heygen_video(brand_name: str, product_name: str, script_text: str):
+    """Sends payload to HeyGen API with dynamic avatar selection."""
+    heygen_key = os.getenv("HEYGEN_API_KEY", "heygen_placeholder")
+    url = "https://api.heygen.com/v2/video/generate"
+    headers = {
+        "X-Api-Key": heygen_key,
+        "Content-Type": "application/json"
+    }
+    
+    # Pick a random creator avatar from the pool for fresh variation
+    chosen_avatar = random.choice(HEYGEN_AVATARS)
+    LOG.info(f"[HeyGen] Dynamically selected avatar '{chosen_avatar}' for {brand_name}")
+
+    payload = {
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "avatar",
+                    "avatar_id": chosen_avatar,
+                    "avatar_style": "normal"
+                },
+                "voice": {
+                    "type": "text",
+                    "input_text": script_text,
+                    "voice_id": "2d4b87121c7042299c3a0e0e3369a563"
+                }
+            }
+        ],
+        "dimension": {
+            "width": 1080,
+            "height": 1920
+        }
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=30)
+        LOG.info(f"[HeyGen] Fulfillment response ({res.status_code}): {res.text}")
+    except Exception as e:
+        LOG.error(f"[HeyGen] Failed to dispatch video: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
 # Railway ASGI Integration & Webhooks
 # ---------------------------------------------------------------------------
 app = FastAPI(title="LeadLoop Engine")
@@ -234,7 +289,7 @@ async def stripe_webhook(
     stripe_signature: str = Header(None, alias="Stripe-Signature"),
     background_tasks: BackgroundTasks = None
 ):
-    """Listens for Stripe checkout completions to trigger fulfillment."""
+    """Listens for Stripe checkout completions and triggers HeyGen rendering."""
     payload = await request.body()
     try:
         event = stripe.Webhook.construct_event(
@@ -247,7 +302,21 @@ async def stripe_webhook(
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         metadata = session.get('metadata', {})
-        LOG.info(f"Payment verified for brand: {metadata.get('brand_name')}")
+        brand_name = metadata.get('brand_name', 'DTC Brand')
+        product_name = metadata.get('product_name', 'Skincare Product')
+        
+        script_text = (
+            f"Hey {brand_name}! Here is your high-converting demonstrator hook for {product_name}. "
+            "Stop wasting ad spend on generic content that gets scrolled past. "
+            "Try this UGC format to boost your ROAS instantly!"
+        )
+
+        LOG.info(f"VERIFIED PAYMENT: Fulfilling order for {brand_name}")
+        
+        if background_tasks:
+            background_tasks.add_task(trigger_heygen_video, brand_name, product_name, script_text)
+        else:
+            trigger_heygen_video(brand_name, product_name, script_text)
 
     return {"status": "success"}
 
