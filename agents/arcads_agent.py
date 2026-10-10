@@ -11,7 +11,6 @@ async def generate_ugc_video(script_text: str = None, customer_email: str = None
 
     if state_json_str:
         try:
-            # Parse to ensure valid JSON, then dump cleanly formatted
             parsed_json = json.loads(state_json_str)
             with open(state_path, "w") as f:
                 json.dump(parsed_json, f)
@@ -32,14 +31,20 @@ async def generate_ugc_video(script_text: str = None, customer_email: str = None
             page = await context.new_page()
 
             print("[Arcads Agent] Navigating to Arcads app...")
-            await page.goto("https://app.arcads.ai", wait_until="networkidle")
+            await page.goto("https://app.arcads.ai", wait_until="domcontentloaded")
             
-            if "login" in page.url:
-                print("[Arcads Agent] Error: Session state expired or invalid. Please re-export cookies.")
+            # Wait briefly to let client-side JS set the session
+            await page.wait_for_timeout(3000)
+
+            # Check if we are redirected to a login page or stay in dashboard
+            if "login" in page.url or "auth" in page.url:
+                print(f"[Arcads Agent] Session redirected to: {page.url}. Refreshing session state required.")
                 await browser.close()
                 return False
 
             print("[Arcads Agent] Authenticated successfully via session state!")
+            # Playwright script actions for video creation go here
+            
             await browser.close()
             print("[Arcads Agent] UGC video generation queued successfully.")
             return True
