@@ -15,5 +15,5 @@ COPY . .
 EXPOSE 8080
 
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} & \
-    python agent_x.py & \
-    python lead_hunter.py
+    python agent/agent_x.py & \
+    python agent/lead_hunter.py
