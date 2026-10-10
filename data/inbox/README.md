@@ -8,9 +8,32 @@ and moves each file to `../processed/`, so a batch is ingested once.
 | Path | Purpose |
 | --- | --- |
 | `data/inbox/*.json` | A JSON **array** of lead objects (or an object with a `leads` array). |
+| `data/inbox/*.csv` | The owner's opted-in export (see [CSV export](#csv-export) below). |
 | `data/queue.jsonl` | One JSON object per line. Lives in `data/`, not `data/inbox/`. |
 
-`data/inbox/README.md` itself is ignored — only `*.json` is read.
+`data/inbox/README.md` itself is ignored — only `*.json` and `*.csv` are read.
+
+## CSV export
+
+Drop a CSV of the owner's opted-in list in this directory and run
+`python3 main.py --once`. The first row must be a header; names are matched
+case-insensitively and unknown columns are **ignored**, so an existing export
+can carry extra data without breaking the import.
+
+| Recognised header | Lead field |
+| --- | --- |
+| `email`, `e-mail`, `email address` | `email` (**required**) |
+| `website`, `domain` | `website` |
+| `company`, `company name` | `company` |
+| `employees` | `employees` (number, or `"85"` / `"1.2k"`) |
+| `revenue` | `revenue` (number, or `"6.5m"`) |
+| `industry` | `industry` |
+| `source` | `source` |
+| `lawful_basis`, `lawful basis` | `lawful_basis` |
+
+A row with an invalid email or website is logged and skipped, never inserted.
+Files are moved to `../processed/` after ingest, and email/website dedupe means
+re-importing the same export inserts zero rows.
 
 ## Lead object
 
@@ -51,7 +74,9 @@ and moves each file to `../processed/`, so a batch is ingested once.
   as `"unknown"` / `"unspecified"` and are treated as a red flag.
 * Opt-outs belong in the `suppressions` table, not here — a suppressed email is
   never inserted and never classified.
-* The engine is dry-run by default. Nothing is sent anywhere in step 1.
+* The engine is dry-run by default. As of step 2a it writes scripts to
+  `../scripts/` and queues video renders, but nothing is sent anywhere: the
+  dispatcher that emails a contact does not exist yet (step 2b).
 
 ## Dedupe
 
