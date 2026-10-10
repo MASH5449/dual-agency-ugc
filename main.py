@@ -40,6 +40,10 @@ BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
 
 stripe.api_key = STRIPE_API_KEY
 
+# Fallbacks in case of HeyGen network timeout
+FALLBACK_AVATAR_ID = "look_def456"
+FALLBACK_VOICE_ID = "1bd001e7e50f421d891986aad5c8bbd2"
+
 # ------------------------------------------------------------------------------
 # REAL-TIME AGENT LOG STREAMING (For Next.js UI)
 # ------------------------------------------------------------------------------
@@ -75,35 +79,41 @@ app.add_middleware(
 # ------------------------------------------------------------------------------
 
 def get_public_avatar_and_voice():
-    """Dynamically fetches active public avatar and voice IDs from HeyGen live API."""
+    """Dynamically fetches active public avatar looks and voices via HeyGen v3 API with fallbacks."""
     headers = {"X-Api-Key": HEYGEN_API_KEY}
     
     avatar_id = None
     voice_id = None
     
-    # 1. Fetch active avatar
+    # 1. Fetch active avatar look (v3 API)
     try:
-        avatar_res = requests.get("https://api.heygen.com/v2/avatars", headers=headers, timeout=5)
+        avatar_url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=10"
+        avatar_res = requests.get(avatar_url, headers=headers, timeout=10)
         if avatar_res.status_code == 200:
-            avatars = avatar_res.json().get("data", {}).get("avatars", [])
-            if avatars:
-                selected_avatar = random.choice(avatars)
-                avatar_id = selected_avatar.get("avatar_id")
+            looks = avatar_res.json().get("data", [])
+            if looks:
+                selected_look = random.choice(looks)
+                avatar_id = selected_look.get("id") or selected_look.get("look_id")
     except Exception as e:
-        logger.warning(f"Failed to fetch dynamic avatar: {e}")
+        logger.warning(f"Avatar fetch timed out or failed ({e}). Using fallback avatar.")
 
-    # 2. Fetch active voice
+    # 2. Fetch active voice (v3 API)
     try:
-        voice_res = requests.get("https://api.heygen.com/v3/voices?type=public&language=English&limit=10", headers=headers, timeout=5)
+        voice_url = "https://api.heygen.com/v3/voices?type=public&language=English&limit=10"
+        voice_res = requests.get(voice_url, headers=headers, timeout=10)
         if voice_res.status_code == 200:
             voices = voice_res.json().get("data", [])
             if voices:
                 selected_voice = random.choice(voices)
                 voice_id = selected_voice.get("voice_id")
     except Exception as e:
-        logger.warning(f"Failed to fetch dynamic voice: {e}")
+        logger.warning(f"Voice fetch timed out or failed ({e}). Using fallback voice.")
 
-    return avatar_id, voice_id
+    # Apply fallbacks if live calls fail
+    final_avatar = avatar_id or FALLBACK_AVATAR_ID
+    final_voice = voice_id or FALLBACK_VOICE_ID
+
+    return final_avatar, final_voice
 
 
 def stop_instantly_lead(email: str, campaign_id: str):
@@ -140,16 +150,12 @@ def stop_instantly_lead(email: str, campaign_id: str):
 
 
 def trigger_heygen_generation(customer_email: str, company_name: str):
-    """Dynamically fetches active HeyGen avatar/voice IDs and triggers video generation."""
+    """Fetches avatar/voice IDs and triggers HeyGen video generation."""
     if not HEYGEN_API_KEY:
         logger.error("HEYGEN_API_KEY environment variable is missing!")
         return None
 
     avatar_id, voice_id = get_public_avatar_and_voice()
-    
-    if not avatar_id or not voice_id:
-        logger.error("Could not retrieve valid live Avatar ID or Voice ID from HeyGen.")
-        return None
 
     url = "https://api.heygen.com/v2/video/generate"
     headers = {
@@ -162,7 +168,6 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
         f"engineered for {company_name}. Test this hook across TikTok and Instagram Reels today!"
     )
     
-    # Clean host URL for webhook callback
     host_domain = BASE_URL.rstrip('/')
     callback_endpoint = f"{host_domain}/webhook/heygen"
 
