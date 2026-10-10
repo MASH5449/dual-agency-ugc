@@ -29,23 +29,13 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # HeyGen v3 Payload with required voice_id
+    # Official HeyGen v3 Flat Payload Schema
     payload = {
         "type": "avatar",
-        "video_inputs": [
-            {
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": "Daisy-inic-20220818",
-                    "avatar_style": "normal"
-                },
-                "voice": {
-                    "type": "text",
-                    "input_text": script_text,
-                    "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54"  # Public HeyGen Voice ID
-                }
-            }
-        ],
+        "avatar_id": "Daisy-inic-20220818",
+        "avatar_style": "normal",
+        "script": script_text,
+        "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54",
         "dimension": {
             "width": 1080,
             "height": 1920
