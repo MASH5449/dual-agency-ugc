@@ -10,6 +10,8 @@ __pycache__/
 
 # Consumed ingest files
 data/processed/
+# Generated working data: per-lead scripts awaiting owner review
+data/scripts/
 
 # Secrets and local config
 .env

@@ -127,7 +127,9 @@ class PipelineTestCase(unittest.TestCase):
 
         statuses = {row["status"] for row in self.rows()}
         tiers = {row["tier"] for row in self.rows()}
-        self.assertEqual(statuses, {"classified"})
+        # Step 2a: a pass now runs ingest -> classify -> script -> video queue,
+        # so every lead finishes the pass in video_queued (dry-run provider).
+        self.assertEqual(statuses, {"video_queued"})
         self.assertEqual(tiers, {"quick", "scale", "whitelabel"})
 
     def test_second_pass_over_identical_input_inserts_zero(self) -> None:

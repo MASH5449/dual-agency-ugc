@@ -25,8 +25,10 @@ Read this before writing code here. It is short and every rule is load-bearing.
 ## Logging
 
 * Tag every agent action with its tag, supplied as the logger *name* so it
-  appears exactly once per line: `[Agent-Scraper]`, `[Agent-Classifier]`,
-  `[Agent-Script]`, `[Agent-Dispatcher]`, `[LeadLoop]`.
+  appears exactly once per line: `[Agent-Scraper]` (ingest), `[Agent-Classifier]`
+  (tiering), `[Agent-Script]` (per-tier script + persistence), `[Agent-Video]`
+  (video provider queue), `[LeadLoop]` (pipeline driver, config, loop lifecycle).
+  `[Agent-Dispatcher]` is reserved for the unbuilt step 2b — no code logs it yet.
 * Use `Agent.log()` / `Agent.log_error()` from `agents/base.py` so per-item
   failures are logged under the right tag and never crash the caller.
 * **Never log secret values.** Log whether a variable is set — use
@@ -36,7 +38,10 @@ Read this before writing code here. It is short and every rule is load-bearing.
 ## Safety and compliance
 
 * **Dry-run is the default.** Live outbound requires the explicit go-live env
-  flag; step 1 makes no network calls at all.
+  flag (`DRY_RUN=false`). A live HeyGen render is refused unless all three hold:
+  `DRY_RUN=false`, `HEYGEN_API_KEY` set, `MOCK_MODE` off. The refusal is logged
+  and the row is marked `failed` — no silent skip. **No email is sent by this
+  build**: the dispatcher (step 2b) does not exist yet.
 * No scraping personal email addresses off the open web for bulk cold email.
 * Check the `suppressions` table before any dispatch, and keep an easy opt-out
   in the copy. Truthful copy only — no manufactured urgency.
@@ -51,8 +56,21 @@ Read this before writing code here. It is short and every rule is load-bearing.
   `lead_firmographics`).
 * Dedupe is the point of the engine: normalise before insert, then
   `ON CONFLICT DO NOTHING`. Never bypass `db.insert_leads()`.
-* Tier values are exactly `quick` / `scale` / `whitelabel`. Status lifecycle in
-  step 1 is `new` → `classified`, plus `failed`.
+* Tier values are exactly `quick` / `scale` / `whitelabel`. Status lifecycle:
+  `new` → `classified` → `scripted` → `video_queued`, plus `failed`. Dispatch
+  states arrive with step 2b.
+* Pipeline stages, one agent each: `[Agent-Scraper]` (ingest from
+  `data/inbox/*.json` / `*.csv` / `data/queue.jsonl`) → `[Agent-Classifier]` →
+  `[Agent-Script]` (persists `data/scripts/<lead_id>.json`) → `[Agent-Video]`
+  (provider queue, dry-run by default). The dispatcher that would route a
+  finished video into a tier's Instantly campaign is **not built**.
+* `leads.updated_at` is added by an **idempotent, additive migration** run at
+  startup (`Database.migrate_schema()`): skipped when the column already exists,
+  backfilled from `created_at`. Upgrading an existing `leads.db` in place is
+  safe. Never drop, rename or reorder columns.
+* Shared resilience helpers live in `agents/util.py`: retry ×3 with exponential
+  backoff (transient errors only) and a 2–5s throttle between consecutive *live*
+  provider calls. Reuse them instead of writing new retry loops.
 
 ## Tests
 

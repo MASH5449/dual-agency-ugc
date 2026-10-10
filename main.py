@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""LeadLoop — autonomous background lead engine (step 1).
+"""LeadLoop — autonomous background lead engine (step 2a).
 
-Stdlib only: asyncio, argparse, sqlite3, logging, signal. No network calls.
+Stdlib only: asyncio, argparse, sqlite3, logging, signal. No network calls in
+dry-run, which is the default.
 
-Step 1 pipeline (one pass):
+Pipeline (one pass):
 
-    [Agent-Scraper]    ingest data/inbox/*.json + data/queue.jsonl -> leads
+    [Agent-Scraper]    ingest data/inbox/*.json + *.csv + data/queue.jsonl -> leads
     [Agent-Classifier] assign tier (quick/scale/whitelabel), new -> classified
+    [Agent-Script]     per-tier script -> data/scripts/<lead_id>.json, -> scripted
+    [Agent-Video]      queue a render via the configured provider, -> video_queued
 
-Step 2 (a later delegation) adds script generation, video generation and
-dispatch. Nothing here half-stubs those stages.
+Dispatch (Instantly routing + the HeyGen callback) is a later delegation.
 
 Usage:
     python3 main.py --once      one full pipeline pass, then exit 0
@@ -30,6 +32,9 @@ import config as config_module
 from agents.base import configure_logging
 from agents.classifier_agent import ClassifierAgent
 from agents.scraper_agent import ScraperAgent
+from agents.script_agent import ScriptAgent
+from agents.video_agent import VideoQueueAgent
+from agents.video_provider import describe_provider
 from db import Database
 
 #: Log tag for the pipeline driver. Doubles as the logger name, so every line
@@ -59,6 +64,7 @@ class Pipeline:
         self.cfg.data_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.inbox_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.scripts_dir.mkdir(parents=True, exist_ok=True)
         self.db.init_schema()
         LOG.info("schema ready at %s", self.cfg.db_path)
 
@@ -90,6 +96,28 @@ class Pipeline:
             )
             summary["classify"] = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # Stage 3 — script generation (persists one JSON per lead).
+        try:
+            script_agent = ScriptAgent(self.cfg, self.db)
+            summary["script"] = script_agent.run_once()
+        except Exception as exc:  # noqa: BLE001
+            LOG.error(
+                "script stage failed (%s: %s) - continuing",
+                type(exc).__name__, exc,
+            )
+            summary["script"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # Stage 4 — queue a render per scripted lead through the provider.
+        try:
+            video_agent = VideoQueueAgent(self.cfg, self.db)
+            summary["video"] = video_agent.run_once()
+        except Exception as exc:  # noqa: BLE001
+            LOG.error(
+                "video stage failed (%s: %s) - continuing",
+                type(exc).__name__, exc,
+            )
+            summary["video"] = {"error": f"{type(exc).__name__}: {exc}"}
+
         summary["leads_total"] = self.db.count()
         LOG.info(
             "pass %d done: %d lead(s) in DB, dry_run=%s",
@@ -112,6 +140,8 @@ def log_startup(cfg) -> None:
     LOG.info("starting: %s", cfg.summary())
     for name, state in cfg.describe().items():
         LOG.info("env %s: %s", name, state)
+    # Which video provider is in play, and whether it may run. Never a key value.
+    LOG.info("video provider: %s", describe_provider(cfg))
     if cfg.dry_run:
         LOG.info("DRY RUN - no outbound will be sent")
     else:
@@ -201,7 +231,10 @@ def print_status(cfg) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="LeadLoop autonomous lead engine (step 1: ingest + tiering).",
+        description=(
+            "LeadLoop autonomous lead engine "
+            "(step 2a: ingest, tiering, scripting, video queueing)."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="run one pipeline pass and exit")
