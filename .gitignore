@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Databases - never commit state or test data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Consumed ingest files
+data/processed/
+
+# Secrets and local config
+.env
