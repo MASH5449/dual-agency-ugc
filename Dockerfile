@@ -12,11 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Ensure Python treats /app and /app/agent as import search paths
-ENV PYTHONPATH=/app:/app/agent
+ENV PYTHONPATH=/app:/app/agents
 
 EXPOSE 8080
 
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} & \
-    python agent/agent_x.py & \
-    python agent/lead_hunter.py
+    python agents/agent_x.py & \
+    python agents/lead_hunter.py
