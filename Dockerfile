@@ -1,3 +1,4 @@
+Dockerfile
 FROM python:3.10-slim
 
 WORKDIR /app
@@ -11,6 +12,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Ensure Python treats /app and /app/agent as import search paths
+ENV PYTHONPATH=/app:/app/agent
 
 EXPOSE 8080
 
