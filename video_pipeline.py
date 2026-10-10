@@ -29,17 +29,13 @@ def generate_video(product_url: str, tier: str):
         f"This is easily one of our top picks this season. Go grab yours today!"
     )
 
-    # Official HeyGen v3 Flat Payload Schema
+    # Valid HeyGen v3 Flat Schema
     payload = {
         "type": "avatar",
         "avatar_id": "Daisy-inic-20220818",
-        "avatar_style": "normal",
         "script": script_text,
         "voice_id": "2d5b0e6cf36f460aa7fc47e3eee4ba54",
-        "dimension": {
-            "width": 1080,
-            "height": 1920
-        }
+        "aspect_ratio": "9:16"
     }
 
     try:
