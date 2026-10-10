@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="LeadLoop Engine API", version="2.0.0")
 
-# Enable CORS for all incoming client calls
+# Enable CORS for all incoming frontend and webhook requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,23 +42,23 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
 # ------------------------------------------------------------------
-# CURATED AVATAR & VOICE ROSTER MATRIX
+# CURATED SKINCARE & COSMETICS AVATAR ROSTER MATRIX
 # ------------------------------------------------------------------
 AVATAR_ROSTER = {
-    "tech_male": {
-        "avatar_id": "Tyler_public_2_20240108",
-        "voice_id": "1bd001e7e50f421d891986aad5158bc8",
-        "name": "Tyler (Tech Spokesperson)"
+    "skincare_ugc_1": {
+        "avatar_id": "8fe1340be40d453b855378de493bd42f",
+        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
+        "name": "Skincare UGC Specialist #1"
     },
-    "dtc_female": {
-        "avatar_id": "Daisy_public_3_20240108",
-        "voice_id": "13fb292a05c2496090e3676a16174a7b",
-        "name": "Daisy (E-Commerce UGC)"
+    "skincare_ugc_2": {
+        "avatar_id": "1a195cfcbcbb4d47b1a0bb9714f081e5",
+        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
+        "name": "Beauty & Cosmetics Pitcher #2"
     },
-    "enterprise_male": {
-        "avatar_id": "Edward_public_20240108",
-        "voice_id": "e58b323605c1410f929312f2c0500138",
-        "name": "Edward (Corporate Representative)"
+    "skincare_ugc_3": {
+        "avatar_id": "fade5ca456604426ad66bcc97d24ddf9",
+        "voice_id": "13fb292a05c2496090e3676a16174a7b",  # Natural English Female
+        "name": "Brand Founder Representative #3"
     }
 }
 
@@ -186,7 +186,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         "Content-Type": "application/json"
     }
     
-    script_text = f"Hey {company_name}! Thanks for claiming your custom video creative. Here is your brand demonstration!"
+    script_text = f"Hey {company_name}! Thanks for claiming your custom skincare video creative. Here is your brand demonstration!"
 
     payload = {
         "video_inputs": [
