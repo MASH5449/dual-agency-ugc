@@ -37,7 +37,12 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
+# X / Twitter Credentials (Optional - Gracefully Bypassed If Missing)
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
+X_API_KEY = os.getenv("X_API_KEY", "")
+X_API_SECRET = os.getenv("X_API_SECRET", "")
+X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN", "")
+X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET", "")
 
 # ------------------------------------------------------------------
 # LOGGING & SSE EVENT HELPER
@@ -93,7 +98,7 @@ LeadLoop Fulfillment Engine
     msg.attach(MIMEText(body, 'plain'))
 
     try:
-        # Use Port 587 with STARTTLS explicitly to prevent cloud port-blocking
+        # Port 587 with STARTTLS explicitly prevents cloud port-blocking
         server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
         server.starttls()
         server.login(SMTP_USER, SMTP_PASSWORD)
@@ -235,16 +240,18 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"status": "success"}
 
 # ------------------------------------------------------------------
-# SAFE X / TWITTER BACKGROUND AGENT INITIALIZER
+# STARTUP EVENT & X AGENT INITIALIZER
 # ------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     
     if not X_BEARER_TOKEN:
-        print("[Agent X] Credentials missing. X/Twitter background thread safely suspended.")
+        print("[Agent X] Credentials missing in Railway variables. Worker suspended until keys are added.")
+        await log_event("Agent X", "Credentials missing. Sleeping thread until configured.", "STANDBY")
     else:
-        print("[Agent X] Credentials found. Initializing X worker thread.")
+        print("[Agent X] Credentials detected! Initializing X/Twitter worker pipeline.")
+        await log_event("Agent X", "Twitter/X Pipeline Worker active.", "READY")
 
 @app.get("/")
 def health_check():
