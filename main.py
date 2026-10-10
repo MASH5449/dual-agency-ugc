@@ -94,7 +94,7 @@ def stop_instantly_lead(email: str, campaign_id: str):
         logger.warning("Instantly API Key or Campaign ID missing. Skipping auto-pause.")
         return False
         
-    url = "[https://api.instantly.ai/api/v2/leads/update-interest-status](https://api.instantly.ai/api/v2/leads/update-interest-status)"
+  url = "https://api.instantly.ai/api/v2/leads/update-interest-status"
     headers = {
         "Authorization": f"Bearer {INSTANTLY_API_KEY}",
         "Content-Type": "application/json"
@@ -122,7 +122,7 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
     """Selects a random avatar and sends video creation payload to HeyGen."""
     avatar = random.choice(AVATAR_POOL)
     
-    url = "[https://api.heygen.com/v2/video/generate](https://api.heygen.com/v2/video/generate)"
+   url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
