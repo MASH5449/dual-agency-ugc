@@ -13,7 +13,6 @@ import stripe
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 # ------------------------------------------------------------------------------
 # LOGGING SETUP
@@ -40,16 +39,6 @@ SMTP_PASS = os.getenv("SMTP_PASS", "")
 BASE_URL = os.getenv("BASE_URL", "https://your-app.up.railway.app")
 
 stripe.api_key = STRIPE_API_KEY
-
-# ------------------------------------------------------------------------------
-# AVATAR POOL
-# ------------------------------------------------------------------------------
-AVATAR_POOL = [
-    {"name": "Daisy", "avatar_id": "Daisy-Theresa-20220818", "gender": "female"},
-    {"name": "Josh", "avatar_id": "Josh-inTech-20220820", "gender": "male"},
-    {"name": "Kristin", "avatar_id": "Kristin-inChair-20220820", "gender": "female"},
-    {"name": "Tyler", "avatar_id": "Tyler-inHoodie-20220820", "gender": "male"}
-]
 
 # ------------------------------------------------------------------------------
 # REAL-TIME AGENT LOG STREAMING (For Next.js UI)
@@ -85,19 +74,36 @@ app.add_middleware(
 # HELPER FUNCTIONS
 # ------------------------------------------------------------------------------
 
-def get_public_voice_id(gender: str = "female") -> str:
-    """Queries HeyGen live API for a valid active public voice ID."""
-    url = f"https://api.heygen.com/v3/voices?type=public&language=English&gender={gender}&limit=1"
+def get_public_avatar_and_voice():
+    """Dynamically fetches active public avatar and voice IDs from HeyGen live API."""
     headers = {"X-Api-Key": HEYGEN_API_KEY}
+    
+    avatar_id = None
+    voice_id = None
+    
+    # 1. Fetch active avatar
     try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json().get("data", [])
-            if data and len(data) > 0:
-                return data[0]["voice_id"]
+        avatar_res = requests.get("https://api.heygen.com/v2/avatars", headers=headers, timeout=5)
+        if avatar_res.status_code == 200:
+            avatars = avatar_res.json().get("data", {}).get("avatars", [])
+            if avatars:
+                selected_avatar = random.choice(avatars)
+                avatar_id = selected_avatar.get("avatar_id")
     except Exception as e:
-        logger.warning(f"Could not fetch dynamic voice ID: {e}")
-    return "1bd001e7e50f421d891986aad5c8bbd2"
+        logger.warning(f"Failed to fetch dynamic avatar: {e}")
+
+    # 2. Fetch active voice
+    try:
+        voice_res = requests.get("https://api.heygen.com/v3/voices?type=public&language=English&limit=10", headers=headers, timeout=5)
+        if voice_res.status_code == 200:
+            voices = voice_res.json().get("data", [])
+            if voices:
+                selected_voice = random.choice(voices)
+                voice_id = selected_voice.get("voice_id")
+    except Exception as e:
+        logger.warning(f"Failed to fetch dynamic voice: {e}")
+
+    return avatar_id, voice_id
 
 
 def stop_instantly_lead(email: str, campaign_id: str):
@@ -134,10 +140,17 @@ def stop_instantly_lead(email: str, campaign_id: str):
 
 
 def trigger_heygen_generation(customer_email: str, company_name: str):
-    """Selects an avatar, dynamically fetches an active voice ID, and generates the video."""
-    avatar = random.choice(AVATAR_POOL)
-    voice_id = get_public_voice_id(avatar.get("gender", "female"))
+    """Dynamically fetches active HeyGen avatar/voice IDs and triggers video generation."""
+    if not HEYGEN_API_KEY:
+        logger.error("HEYGEN_API_KEY environment variable is missing!")
+        return None
+
+    avatar_id, voice_id = get_public_avatar_and_voice()
     
+    if not avatar_id or not voice_id:
+        logger.error("Could not retrieve valid live Avatar ID or Voice ID from HeyGen.")
+        return None
+
     url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
@@ -149,12 +162,16 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
         f"engineered for {company_name}. Test this hook across TikTok and Instagram Reels today!"
     )
     
+    # Clean host URL for webhook callback
+    host_domain = BASE_URL.rstrip('/')
+    callback_endpoint = f"{host_domain}/webhook/heygen"
+
     payload = {
         "video_inputs": [
             {
                 "character": {
                     "type": "avatar",
-                    "avatar_id": avatar["avatar_id"],
+                    "avatar_id": avatar_id,
                     "avatar_style": "normal"
                 },
                 "voice": {
@@ -168,7 +185,8 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
             "width": 1080,
             "height": 1920
         },
-        "callback_id": customer_email
+        "callback_id": customer_email,
+        "callback_url": callback_endpoint
     }
     
     try:
@@ -176,10 +194,10 @@ def trigger_heygen_generation(customer_email: str, company_name: str):
         res_data = res.json()
         if res.status_code == 200 and res_data.get("data"):
             video_id = res_data.get("data", {}).get("video_id")
-            logger.info(f"HeyGen generation task queued successfully. Video ID: {video_id}")
+            logger.info(f"HeyGen generation task queued successfully! Video ID: {video_id}")
             return video_id
         else:
-            logger.error(f"HeyGen API Error: {res_data}")
+            logger.error(f"HeyGen API Error ({res.status_code}): {res_data}")
             return None
     except Exception as e:
         logger.error(f"Failed to connect to HeyGen: {str(e)}")
