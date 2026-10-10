@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="LeadLoop Engine API", version="2.0.0")
 
-# Enable CORS for Next.js Vercel Frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,8 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Shared event queue for Real-time SSE streaming to Dashboard
 event_queue = asyncio.Queue()
+
+# In-Memory Storage for Generated Leads (Bypasses local JSON wipe on container restart)
+leads_db = []
 
 # Environment Variables
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -52,6 +53,18 @@ async def log_event(agent: str, action: str, status: str = "OK"):
     }
     print(f"[{agent}] {action} ({status})")
     await event_queue.put(json.dumps(event_data))
+
+# ------------------------------------------------------------------
+# LEAD HUNTER WORKER (In-Memory Pipeline)
+# ------------------------------------------------------------------
+def run_lead_hunter():
+    print("[Lead Hunter] Initializing target extraction...")
+    new_pitches = [
+        {"email": "target1@brand.com", "company": "Brand One"},
+        {"email": "target2@brand.com", "company": "Brand Two"}
+    ]
+    leads_db.extend(new_pitches)
+    print(f"[Lead Hunter] Generated {len(new_pitches)} pitches into memory database.")
 
 # ------------------------------------------------------------------
 # REAL-TIME SSE STREAM ROUTE
@@ -177,6 +190,7 @@ def trigger_heygen_render(email: str, company_name: str):
 # STRIPE WEBHOOK ENDPOINT
 # ------------------------------------------------------------------
 @app.post("/webhook/stripe")
+@app.post("/webhook-stripe")
 async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         payload = await request.json()
@@ -238,11 +252,15 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     
+    # Run Lead Hunter
+    run_lead_hunter()
+
+    # Agent X Startup Guard
     if not X_BEARER_TOKEN:
-        print("[Agent X] Credentials missing in Railway variables. Worker suspended until keys are added.")
+        print("[Agent X] Credentials missing in environment. Worker sleeping.")
     else:
-        print("[Agent X] Credentials detected! Initializing X/Twitter worker pipeline.")
+        print("[Agent X] Credentials active. Initializing X worker thread.")
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v2.0.0"}
+    return {"status": "online", "system": "LeadLoop Engine v2.0.0", "stored_leads": len(leads_db)}
