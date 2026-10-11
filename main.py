@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.7.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.8.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -42,11 +42,8 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
-# Imported ElevenLabs Voice ID registered inside HeyGen
+# Imported Female ElevenLabs Voice ID registered inside HeyGen
 HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
-
-# Cache for fetched V3 avatar look IDs
-CACHED_V3_LOOKS = []
 
 # ------------------------------------------------------------------
 # DYNAMIC SKINCARE SCRIPT TEMPLATE ENGINE
@@ -165,14 +162,9 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V3 AVATAR LOOKS DYNAMIC RESOLVER
+# STRICT FEMALE AVATAR LOOK RESOLVER (GENDER MATCHING)
 # ------------------------------------------------------------------
-def get_valid_v3_avatar_look():
-    global CACHED_V3_LOOKS
-    
-    if CACHED_V3_LOOKS:
-        return random.choice(CACHED_V3_LOOKS)
-
+def get_valid_female_v3_look():
     url = "https://api.heygen.com/v3/avatars/looks"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
@@ -182,18 +174,31 @@ def get_valid_v3_avatar_look():
             raw_data = res.json().get("data", [])
             looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
             
+            female_looks = []
             for item in looks_list:
-                look_id = item.get("id") or item.get("look_id") if isinstance(item, dict) else item
-                if look_id:
-                    CACHED_V3_LOOKS.append(look_id)
+                if isinstance(item, dict):
+                    look_id = item.get("id") or item.get("look_id")
+                    gender = str(item.get("gender", "")).lower()
+                    name = item.get("name", "UGC Creator")
+                    
+                    # Filter strictly for female gender metadata
+                    if look_id and (gender == "female" or "woman" in gender or "female" in gender):
+                        female_looks.append({"id": look_id, "name": name})
             
-            if CACHED_V3_LOOKS:
-                selected_look = random.choice(CACHED_V3_LOOKS)
-                print(f"[Avatar Director] Successfully fetched {len(CACHED_V3_LOOKS)} valid V3 looks. Selected: {selected_look}")
-                return selected_look
+            if female_looks:
+                selected = random.choice(female_looks)
+                print(f"[Avatar Director] Filtered {len(female_looks)} female V3 looks. Selected: '{selected['name']}' ({selected['id']})")
+                return selected["id"]
+            else:
+                print("[Avatar Director] No gender metadata match found. Selecting first look from list.")
+                for item in looks_list:
+                    look_id = item.get("id") or item.get("look_id") if isinstance(item, dict) else item
+                    if look_id:
+                        return look_id
     except Exception as e:
         print(f"ERROR:LeadLoop:Failed to fetch V3 avatar looks dynamically: {e}")
 
+    # Default fallback
     return "745b64340bdf4789b3927c11f3911b2f"
 
 # ------------------------------------------------------------------
@@ -204,10 +209,11 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    avatar_id = get_valid_v3_avatar_look()
+    # Strictly fetch a female avatar look ID matching the female voice model
+    avatar_id = get_valid_female_v3_look()
     script_text = generate_skincare_script(company_name)
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using avatar: {avatar_id} and custom voice: {HEYGEN_VOICE_ID}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using female look: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -315,4 +321,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.7.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.8.0", "stored_leads": len(leads_db)}
