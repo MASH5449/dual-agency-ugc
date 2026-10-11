@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.0.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.1.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -42,8 +42,10 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
-# Standard Female English Voice ID for HeyGen V3
-DEFAULT_FEMALE_VOICE_ID = "1bd001e7e50f421d891986aad5158bc8"
+# ------------------------------------------------------------------
+# ELEVENLABS HIGH-RETENTION VOICE CONFIGURATION
+# ------------------------------------------------------------------
+ELEVENLABS_VOICE_ID = "ogwqBH5bbF03DSbNiRNN"
 
 # ------------------------------------------------------------------
 # CURATED SKINCARE & COSMETICS AVATAR ROSTER MATRIX
@@ -62,6 +64,21 @@ AVATAR_ROSTER = {
         "name": "Brand Founder Representative #3"
     }
 }
+
+# ------------------------------------------------------------------
+# DYNAMIC SKINCARE SCRIPT TEMPLATE ENGINE
+# ------------------------------------------------------------------
+SKINCARE_SCRIPT_TEMPLATES = [
+    "Hey {company_name} team! I was reviewing your skincare lineup and noticed your social video ads could convert significantly higher with authentic UGC-style creative. Here is a quick custom sample built specifically for {company_name}!",
+    "Hi {company_name}! I love your clean cosmetics branding. We generated this personalized video concept to show how high-performing UGC creator videos can lower your customer acquisition costs this month.",
+    "Hey there {company_name}! I came across your brand while researching top skincare lines. Our agency put together this quick UGC demonstration to show what scalable ad variations look like for {company_name}.",
+    "Hi team at {company_name}! Standard product shots are getting glossed over on social feeds right now. We created this UGC video concept for {company_name} to show how real human hooks drive higher click-through rates.",
+    "Hey {company_name}! Quick question for your marketing team—are you scaling your monthly UGC video variations yet? Here is a tailored creative sample we rendered just for {company_name}."
+]
+
+def generate_skincare_script(company_name: str) -> str:
+    template = random.choice(SKINCARE_SCRIPT_TEMPLATES)
+    return template.format(company_name=company_name)
 
 # ------------------------------------------------------------------
 # LOGGING & SSE EVENT HELPER
@@ -172,13 +189,17 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
+    # Select requested persona, or randomly assign one from the roster
     if persona and persona in AVATAR_ROSTER:
         selected_actor = AVATAR_ROSTER[persona]
     else:
         selected_key = random.choice(list(AVATAR_ROSTER.keys()))
         selected_actor = AVATAR_ROSTER[selected_key]
 
-    print(f"[Avatar Director] Dispatching render with actor: {selected_actor['name']}")
+    # Generate dynamic, personalized skincare script
+    script_text = generate_skincare_script(company_name)
+
+    print(f"[Avatar Director] Dispatching render for '{company_name}' using actor: {selected_actor['name']}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -186,14 +207,12 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         "Content-Type": "application/json"
     }
     
-    script_text = f"Hey {company_name}! Thanks for claiming your custom skincare video creative. Here is your brand demonstration!"
-
-    # Strict V3 payload format
+    # Strict HeyGen V3 JSON Payload with ElevenLabs Voice Binding
     payload = {
         "type": "avatar",
         "avatar_id": selected_actor["avatar_id"],
         "script": script_text,
-        "voice_id": DEFAULT_FEMALE_VOICE_ID,
+        "voice_id": ELEVENLABS_VOICE_ID,
         "aspect_ratio": "9:16"
     }
 
@@ -290,4 +309,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.0.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.1.0", "stored_leads": len(leads_db)}
