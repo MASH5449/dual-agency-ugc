@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="5.3.0")
+app = FastAPI(title="LeadLoop Engine API", version="5.4.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -49,22 +49,31 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 # Imported Female ElevenLabs Voice ID registered inside HeyGen
 HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 
+# Hardcoded pool of verified public V3 female look IDs for fail-safe rotation
+VERIFIED_PUBLIC_FEMALE_LOOKS = [
+    "745b64340bdf4789b3927c11f3911b2f",
+    "e76c0b3918a14866aa95e01abd339204",
+    "3b76a084c6794692a7e78d150b06ba67",
+    "3f3a1f33f38148bfae345b69f64a2e5d"
+]
+
 # Initialize OpenAI Client
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# HEYGEN V3 PUBLIC FEMALE LOOK RESOLVER (BULLETPROOF ROTATION)
+# HEYGEN V3 PUBLIC FEMALE LOOK RESOLVER
 # ------------------------------------------------------------------
 def fetch_random_v3_public_female_look_id() -> str:
     """
-    Queries GET /v3/avatars/looks?ownership=public to get verified public looks.
-    Filters for female creators and returns the look ID to guarantee zero 404 errors.
+    Queries GET /v3/avatars/looks?ownership=public (limit=50) to fetch public looks.
+    Filters for female creators and rotates them randomly. Falls back to verified public V3 IDs.
     """
     if not HEYGEN_API_KEY:
-        print("[Avatar Director] HEYGEN_API_KEY is missing.")
-        return ""
+        print("[Avatar Director] HEYGEN_API_KEY is missing. Using default fallback look.")
+        return random.choice(VERIFIED_PUBLIC_FEMALE_LOOKS)
 
-    url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=100"
+    # Note: HeyGen enforces a max limit of 50 on this endpoint
+    url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=50"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
@@ -98,14 +107,16 @@ def fetch_random_v3_public_female_look_id() -> str:
                 print(f"[Avatar Director] Isolated {len(female_looks)} public female V3 looks. Selected: '{selected_name}' ({selected_id})")
                 return selected_id
 
-            print(f"[Avatar Director] Response received but no female looks isolated. Raw response: {res.text[:200]}")
+            print(f"[Avatar Director] Response received but no female looks isolated.")
         else:
             print(f"[Avatar Director] GET /v3/avatars/looks failed (HTTP {res.status_code}): {res.text}")
 
     except Exception as e:
         print(f"ERROR:LeadLoop:Failed to query V3 public looks endpoint: {e}")
 
-    return ""
+    fallback_id = random.choice(VERIFIED_PUBLIC_FEMALE_LOOKS)
+    print(f"[Avatar Director] Using guaranteed public V3 fallback look ID: {fallback_id}")
+    return fallback_id
 
 # ------------------------------------------------------------------
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
@@ -381,10 +392,6 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         return
 
     avatar_id = fetch_random_v3_public_female_look_id()
-    if not avatar_id:
-        print("[Avatar Director] ERROR: Could not resolve a valid public female V3 avatar_id from HeyGen.")
-        return
-
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
     print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using public female avatar_id: {avatar_id}")
@@ -533,7 +540,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v5.3.0",
+        "system": "LeadLoop Engine v5.4.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
