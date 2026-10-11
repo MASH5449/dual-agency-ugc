@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.5.0")
+app = FastAPI(title="LeadLoop Engine API", version="4.6.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -70,21 +70,21 @@ def get_valid_female_v3_look() -> str:
     if not HEYGEN_API_KEY:
         return random.choice(VERIFIED_FEMALE_AVATARS)
 
-    url = "https://api.heygen.com/v2/avatars"
+    url = "https://api.heygen.com/v3/avatars"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             raw_data = res.json().get("data", {})
-            avatars = raw_data.get("avatars", [])
+            avatars = raw_data if isinstance(raw_data, list) else raw_data.get("avatars", [])
 
             female_avatars = []
             for item in avatars:
                 if isinstance(item, dict):
-                    avatar_id = item.get("avatar_id")
+                    avatar_id = item.get("avatar_id") or item.get("id")
                     gender = str(item.get("gender", "")).lower()
-                    name = str(item.get("avatar_name", "")).lower()
+                    name = str(item.get("avatar_name", "") or item.get("name", "")).lower()
 
                     if gender == "female" or any(f in name for f in ["jennifer", "sarah", "emma", "chloe", "woman", "girl"]):
                         if avatar_id:
@@ -379,7 +379,7 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE (FIXED TTS PAYLOAD)
+# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     if not HEYGEN_API_KEY:
@@ -389,7 +389,7 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     avatar_id = get_valid_female_v3_look()
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
-    print(f"[Avatar Director] Dispatching render for '{company_name}' using female avatar: {avatar_id}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using female avatar: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -398,24 +398,11 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     }
 
     payload = {
-        "video_inputs": [
-            {
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": avatar_id,
-                    "avatar_style": "normal"
-                },
-                "voice": {
-                    "type": "text",
-                    "voice_id": HEYGEN_VOICE_ID,
-                    "input_text": script_text
-                }
-            }
-        ],
-        "dimension": {
-            "width": 1080,
-            "height": 1920
-        }
+        "type": "avatar",
+        "avatar_id": avatar_id,
+        "script": script_text,
+        "voice_id": HEYGEN_VOICE_ID,
+        "aspect_ratio": "9:16"
     }
 
     try:
@@ -427,7 +414,7 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
             if video_id:
                 generation_jobs[video_id] = email
 
-            print(f"INFO:LeadLoop:HeyGen video generation task queued successfully! Video ID: {video_id}")
+            print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
     except Exception as e:
@@ -547,7 +534,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.5.0",
+        "system": "LeadLoop Engine v4.6.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
