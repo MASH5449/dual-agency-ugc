@@ -11,9 +11,9 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="2.1.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.0.0")
 
-# Enable CORS for all incoming frontend and webhook requests
+# Enable CORS for incoming webhooks and clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,12 +22,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Shared event queue for Real-time SSE streaming
+# Shared event queue for SSE streaming logs
 event_queue = asyncio.Queue()
 
 # In-Memory Storage
 leads_db = []
-generation_jobs = {}  # Maps HeyGen video_id to recipient email
+generation_jobs = {}  # Maps HeyGen video_id -> recipient email
 
 # Environment Variables
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -42,8 +42,8 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
-# Standard, highly reliable female voice ID for HeyGen V3
-DEFAULT_FEMALE_VOICE_ID = "1bd001e7e50f421d891986aad5e3e5d2"
+# Standard Female English Voice ID for HeyGen V3
+DEFAULT_FEMALE_VOICE_ID = "1bd001e7e50f421d891986aad5158bc8"
 
 # ------------------------------------------------------------------
 # CURATED SKINCARE & COSMETICS AVATAR ROSTER MATRIX
@@ -172,7 +172,6 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    # Select requested persona, or randomly assign one from the roster
     if persona and persona in AVATAR_ROSTER:
         selected_actor = AVATAR_ROSTER[persona]
     else:
@@ -189,17 +188,13 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     
     script_text = f"Hey {company_name}! Thanks for claiming your custom skincare video creative. Here is your brand demonstration!"
 
-    # Strict HeyGen V3 JSON Specification Payload
+    # Strict V3 payload format
     payload = {
         "type": "avatar",
         "avatar_id": selected_actor["avatar_id"],
         "script": script_text,
         "voice_id": DEFAULT_FEMALE_VOICE_ID,
-        "aspect_ratio": "9:16",
-        "dimension": {
-            "width": 1080,
-            "height": 1920
-        }
+        "aspect_ratio": "9:16"
     }
 
     try:
@@ -295,4 +290,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v2.1.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.0.0", "stored_leads": len(leads_db)}
