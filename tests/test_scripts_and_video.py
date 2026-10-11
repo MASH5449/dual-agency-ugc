@@ -10,6 +10,7 @@ to 0 and inject recording sleep functions, so nothing waits.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -37,6 +38,7 @@ from agents.util import (  # noqa: E402
 from agents.video_agent import VideoQueueAgent  # noqa: E402
 from agents.video_provider import (  # noqa: E402
     DRYRUN_HOST,
+    HEYGEN_FALLBACK_VOICE_ID,
     DryRunVideoProvider,
     HeyGenVideoProvider,
     VideoRequest,
@@ -435,6 +437,116 @@ class ProviderSelectionTestCase(BaseCase):
         with self.assertRaises(PermanentError):
             retry(run, attempts=3, sleep=lambda s: None)
         self.assertEqual(calls["n"], 1, "a config problem must not be retried")
+
+
+class _FakeResponse:
+    def __init__(self, body: dict, status: int = 200) -> None:
+        self._body = json.dumps(body).encode("utf-8")
+        self.status = status
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+
+class HeyGenAvatarFallbackTestCase(BaseCase):
+    """Avatar fallback on 404 avatar_not_found. Fake opener, no network."""
+
+    LOOKS = {"data": [
+        {"id": "look-1", "default_voice_id": "voice-1"},
+        {"id": "look-2", "default_voice_id": "voice-2"},
+        {"id": "look-3"},
+    ]}
+    NOT_FOUND = {"error": {"code": "avatar_not_found", "message": "Avatar not found"}}
+
+    def make_provider(self, video_outcomes: list):
+        """``video_outcomes``: per /v3/videos call, a dict (success) or an
+        (http_status, body_dict) tuple (HTTPError)."""
+        self.video_calls: list[dict] = []
+        outcomes = list(video_outcomes)
+
+        def opener(request, timeout=None):
+            url = request.full_url
+            if "/v3/avatars/looks" in url:
+                self.looks_url = url
+                return _FakeResponse(self.LOOKS)
+            payload = json.loads(request.data.decode("utf-8"))
+            self.video_calls.append(payload)
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, tuple):
+                status, body = outcome
+                raise urllib.error.HTTPError(
+                    url, status, "err", {}, io.BytesIO(json.dumps(body).encode("utf-8"))
+                )
+            return _FakeResponse(outcome)
+
+        self.logs: list[str] = []
+        return HeyGenVideoProvider(
+            self.cfg, api_key="secret-key", dry_run=False, mock_mode=False,
+            opener=opener, sleep=NoSleep(), log=self.logs.append,
+            throttle_delay=0,
+        )
+
+    def request(self) -> VideoRequest:
+        return VideoRequest(1, "a@b.example.com", "quick", "hello")
+
+    def test_lookup_returns_multiple_candidates_with_fallback_voice(self) -> None:
+        provider = self.make_provider([])
+        candidates = provider.lookup_avatar()
+        self.assertEqual(candidates, [
+            ("look-1", "voice-1"),
+            ("look-2", "voice-2"),
+            ("look-3", HEYGEN_FALLBACK_VOICE_ID),
+        ])
+        self.assertIn("limit=10", self.looks_url)
+
+    def test_first_404_avatar_not_found_then_second_succeeds(self) -> None:
+        provider = self.make_provider(
+            [(404, self.NOT_FOUND), {"data": {"video_id": "vid-2"}}]
+        )
+        result = provider.queue_video(self.request())
+        self.assertEqual(result.video_id, "vid-2")
+        self.assertEqual([c["avatar_id"] for c in self.video_calls], ["look-1", "look-2"])
+        self.assertEqual(self.video_calls[1]["voice_id"], "voice-2")
+        joined = "\n".join(self.logs)
+        self.assertIn("look-1", joined)
+        self.assertIn("used avatar_id look-2", joined)
+        self.assertNotIn("secret-key", joined)
+
+    def test_all_candidates_not_found_raises_permanent_with_attempts(self) -> None:
+        provider = self.make_provider([(404, self.NOT_FOUND)] * 3)
+        with self.assertRaises(PermanentError) as ctx:
+            provider.queue_video(self.request())
+        message = str(ctx.exception)
+        for avatar_id in ("look-1", "look-2", "look-3"):
+            self.assertIn(avatar_id, message)
+        self.assertEqual(len(self.video_calls), 3)
+
+    def test_other_4xx_error_is_not_a_fallback(self) -> None:
+        provider = self.make_provider([(400, {"error": {"code": "invalid_script"}})])
+        with self.assertRaises(PermanentError) as ctx:
+            provider.queue_video(self.request())
+        self.assertEqual(ctx.exception.http_status, 400)
+        self.assertEqual(len(self.video_calls), 1)
+
+    def test_404_with_other_code_is_not_a_fallback(self) -> None:
+        provider = self.make_provider([(404, {"error": {"code": "voice_not_found"}})])
+        with self.assertRaises(PermanentError):
+            provider.queue_video(self.request())
+        self.assertEqual(len(self.video_calls), 1)
+
+    def test_transient_error_is_still_retried_on_same_avatar(self) -> None:
+        provider = self.make_provider(
+            [(503, {"error": {"code": "unavailable"}}), {"data": {"video_id": "vid-1"}}]
+        )
+        result = provider.queue_video(self.request())
+        self.assertEqual(result.video_id, "vid-1")
+        self.assertEqual([c["avatar_id"] for c in self.video_calls], ["look-1", "look-1"])
 
 
 class ResilienceTestCase(unittest.TestCase):
