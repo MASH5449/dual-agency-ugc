@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.2.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.4.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -45,23 +45,8 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 # ElevenLabs Voice ID
 ELEVENLABS_VOICE_ID = "ogwqBH5bbF03DSbNiRNN"
 
-# ------------------------------------------------------------------
-# CURATED SKINCARE & COSMETICS AVATAR ROSTER (PUBLIC V3 SLUGS)
-# ------------------------------------------------------------------
-AVATAR_ROSTER = {
-    "skincare_ugc_1": {
-        "avatar_id": "Daisy-casual-20240108",
-        "name": "Daisy (Skincare UGC Specialist #1)"
-    },
-    "skincare_ugc_2": {
-        "avatar_id": "Katy-lifestyle-20240108",
-        "name": "Katy (Beauty & Cosmetics Pitcher #2)"
-    },
-    "skincare_ugc_3": {
-        "avatar_id": "Eleni-skincare-20240108",
-        "name": "Eleni (Brand Founder Representative #3)"
-    }
-}
+# Cache for fetched V3 avatar look IDs
+CACHED_V3_LOOKS = []
 
 # ------------------------------------------------------------------
 # DYNAMIC SKINCARE SCRIPT TEMPLATE ENGINE
@@ -180,6 +165,38 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
+# HEYGEN V3 AVATAR LOOKS DYNAMIC RESOLVER
+# ------------------------------------------------------------------
+def get_valid_v3_avatar_look():
+    global CACHED_V3_LOOKS
+    
+    # If we already fetched valid looks, pick one randomly
+    if CACHED_V3_LOOKS:
+        return random.choice(CACHED_V3_LOOKS)
+
+    url = "https://api.heygen.com/v3/avatars/looks"
+    headers = {"X-Api-Key": HEYGEN_API_KEY}
+
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            looks_data = res.json().get("data", {}).get("looks", [])
+            for look in looks_data:
+                look_id = look.get("id") or look.get("look_id")
+                if look_id:
+                    CACHED_V3_LOOKS.append(look_id)
+            
+            if CACHED_V3_LOOKS:
+                selected_look = random.choice(CACHED_V3_LOOKS)
+                print(f"[Avatar Director] Fetched {len(CACHED_V3_LOOKS)} valid V3 looks. Selected: {selected_look}")
+                return selected_look
+    except Exception as e:
+        print(f"ERROR:LeadLoop:Failed to fetch V3 avatar looks dynamically: {e}")
+
+    # Fallback to standard V3 public avatar look if endpoint fails
+    return "Daisy-casual-20240108"
+
+# ------------------------------------------------------------------
 # HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, persona: str = None):
@@ -187,15 +204,11 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    if persona and persona in AVATAR_ROSTER:
-        selected_actor = AVATAR_ROSTER[persona]
-    else:
-        selected_key = random.choice(list(AVATAR_ROSTER.keys()))
-        selected_actor = AVATAR_ROSTER[selected_key]
-
+    # Dynamically resolve an avatar look ID that is guaranteed to exist on your account
+    avatar_id = get_valid_v3_avatar_look()
     script_text = generate_skincare_script(company_name)
 
-    print(f"[Avatar Director] Dispatching render for '{company_name}' using actor: {selected_actor['name']}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using look: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -205,7 +218,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     
     payload = {
         "type": "avatar",
-        "avatar_id": selected_actor["avatar_id"],
+        "avatar_id": avatar_id,
         "script": script_text,
         "voice_id": ELEVENLABS_VOICE_ID,
         "aspect_ratio": "9:16"
@@ -220,7 +233,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
             if video_id:
                 generation_jobs[video_id] = email
                 
-            print(f"INFO:LeadLoop:HeyGen generation task queued successfully! Video ID: {video_id}")
+            print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
     except Exception as e:
@@ -304,4 +317,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.2.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.4.0", "stored_leads": len(leads_db)}
