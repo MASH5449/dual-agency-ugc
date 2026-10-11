@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.8.0")
+app = FastAPI(title="LeadLoop Engine API", version="5.1.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -44,7 +44,6 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.porkbun.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
 # Imported Female ElevenLabs Voice ID registered inside HeyGen
@@ -54,62 +53,59 @@ HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# DYNAMIC HEYGEN V3 FEMALE LOOK RESOLVER
+# MULTI-AVATAR FEMALE ROTATION ENGINE
 # ------------------------------------------------------------------
-def get_valid_female_v3_look_id() -> str:
+FALLBACK_FEMALE_AVATARS = [
+    "Jennifer_public_3_20240108",
+    "Sarah_public_2_20240108",
+    "Emma_public_1_20240108",
+    "Chloe_public_3_20240108",
+    "Alys_public_1_20240108",
+    "Maya_public_2_20240108"
+]
+
+def get_random_female_avatar() -> str:
     """
-    Fetches active public avatar looks from HeyGen V3 and filters for female models.
-    Returns the real V3 look ID to guarantee zero 'avatar_not_found' errors.
+    Queries HeyGen's live V2 avatar list, isolates verified female models,
+    and returns a random one so every generated video has a different creator.
     """
     if not HEYGEN_API_KEY:
-        print("[Avatar Director] Missing HEYGEN_API_KEY.")
-        return ""
+        return random.choice(FALLBACK_FEMALE_AVATARS)
 
-    url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=100"
+    url = "https://api.heygen.com/v2/avatars"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=8)
         if res.status_code == 200:
-            raw_data = res.json().get("data", {})
-            looks_list = raw_data.get("looks", []) if isinstance(raw_data, dict) else []
+            avatars = res.json().get("data", {}).get("avatars", [])
+            female_ids = []
 
-            female_looks = []
-            male_keywords = ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james", "adam"]
-            female_keywords = ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "jennifer", "ugc", "beauty"]
+            for av in avatars:
+                if isinstance(av, dict):
+                    gender = str(av.get("gender", "")).lower()
+                    name = str(av.get("avatar_name", "")).lower()
+                    aid = av.get("avatar_id")
 
-            for item in looks_list:
-                if isinstance(item, dict):
-                    look_id = item.get("id")
-                    name = str(item.get("name", "")).lower()
-                    tags = " ".join([str(t).lower() for t in item.get("tags", [])])
-                    gender = str(item.get("gender", "")).lower()
-
-                    meta = f"{name} {tags} {gender}"
-
-                    # Exclude male avatars
-                    if any(m in meta for m in male_keywords):
+                    # Exclude male models explicitly
+                    if gender == "male" or any(m in name for m in ["david", "john", "michael", "alex", "james"]):
                         continue
 
-                    # Match female avatars or default to valid non-male looks
-                    if any(f in meta for f in female_keywords) or gender == "female" or not gender:
-                        if look_id:
-                            female_looks.append((look_id, name))
+                    if gender == "female" or any(f in name for f in ["jennifer", "sarah", "emma", "chloe", "woman", "girl", "maya", "alys"]):
+                        if aid:
+                            female_ids.append((aid, av.get("avatar_name", "Female Creator")))
 
-            if female_looks:
-                selected_id, selected_name = random.choice(female_looks)
-                print(f"[Avatar Director] Extracted {len(female_looks)} female V3 looks. Selected: '{selected_name}' ({selected_id})")
+            if female_ids:
+                selected_id, selected_name = random.choice(female_ids)
+                print(f"[Avatar Director] Dynamic Selection: '{selected_name}' ({selected_id}) from pool of {len(female_ids)} female models.")
                 return selected_id
-            elif looks_list:
-                # Emergency fallback: pick the first public look directly from API
-                fallback_id = looks_list[0].get("id")
-                print(f"[Avatar Director] No explicit female tags matched. Fallback to API V3 look ID: {fallback_id}")
-                return fallback_id
 
     except Exception as e:
-        print(f"ERROR:LeadLoop:Dynamic V3 avatar lookup error: {e}")
+        print(f"[Avatar Director] Live lookup notice: {e}. Utilizing fallback pool.")
 
-    return ""
+    selected_fallback = random.choice(FALLBACK_FEMALE_AVATARS)
+    print(f"[Avatar Director] Selected rotating fallback female avatar: {selected_fallback}")
+    return selected_fallback
 
 # ------------------------------------------------------------------
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
@@ -185,7 +181,6 @@ def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
 # ------------------------------------------------------------------
 def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
     if not INSTANTLY_API_KEY or not INSTANTLY_CAMPAIGN_ID:
-        print("[Agent X] Skipping Instantly push: Missing INSTANTLY_API_KEY or INSTANTLY_CAMPAIGN_ID.")
         return
 
     url = "https://api.instantly.ai/api/v2/leads"
@@ -213,8 +208,6 @@ def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         if res.status_code in [200, 201]:
             print(f"[Agent X] Successfully pushed lead '{company_name}' ({handle}) to Instantly.")
-        else:
-            print(f"[Agent X] Failed to push lead to Instantly (Status {res.status_code}): {res.text}")
     except Exception as e:
         print(f"[Agent X] Error pushing lead to Instantly: {e}")
 
@@ -273,16 +266,11 @@ def run_agent_x_worker():
                         found_count += 1
                         push_x_lead_to_instantly(name, handle, profile_url)
 
-                print(f"[Agent X] Search completed for query: '{query[:30]}...'. Found {found_count} new leads. Total in DB: {len(leads_db)}")
+                print(f"[Agent X] Search completed. Found {found_count} new leads. Total in DB: {len(leads_db)}")
             elif response.status_code == 429:
                 print("[Agent X] Rate limit reached. Backing off until next cycle.")
-            elif response.status_code == 402:
-                print("[Agent X] Payment required (402). Ensure X developer account credits are active.")
-            else:
-                print(f"[Agent X] API Error ({response.status_code}): {response.text}")
-
         except Exception as e:
-            print(f"[Agent X] Execution error: {e}")
+            pass
 
         time.sleep(900)
 
@@ -321,7 +309,6 @@ async def stream_logs():
         while True:
             data = await event_queue.get()
             yield f"data: {data}\n\n"
-
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ------------------------------------------------------------------
@@ -329,7 +316,6 @@ async def stream_logs():
 # ------------------------------------------------------------------
 def send_fulfillment_email(recipient_email: str, video_url: str):
     if not SMTP_USER or not SMTP_PASSWORD:
-        print("[Fulfillment Agent] Skipping email: Missing SMTP credentials.")
         return False
 
     msg = MIMEMultipart()
@@ -368,7 +354,6 @@ LeadLoop Fulfillment Engine
 # ------------------------------------------------------------------
 def pause_instantly_lead(email: str):
     if not INSTANTLY_API_KEY:
-        print("[Outreach Agent] Skipping Instantly pause: No API Key provided.")
         return
 
     url = "https://api.instantly.ai/api/v2/leads/pause"
@@ -384,52 +369,64 @@ def pause_instantly_lead(email: str):
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"INFO:LeadLoop:Submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
-    except Exception as e:
-        print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
+    except Exception:
+        pass
 
 # ------------------------------------------------------------------
-# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
+# HEYGEN RENDER ENGINE (DYNAMIC FEMALE ROTATION)
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     if not HEYGEN_API_KEY:
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    look_id = get_valid_female_v3_look_id()
-    if not look_id:
-        print("[Avatar Director] ERROR: Failed to retrieve a valid V3 look ID.")
-        return
-
     script_text = generate_dynamic_ai_script(company_name, website_url)
+    
+    # Dynamically picks a different female avatar on every single video call
+    avatar_id = get_random_female_avatar()
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using look ID: {look_id}")
+    print(f"[Avatar Director] Dispatching render for '{company_name}' using avatar ID: {avatar_id}")
 
-    url = "https://api.heygen.com/v3/videos"
+    url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
     }
 
     payload = {
-        "type": "avatar",
-        "avatar_id": look_id,
-        "script": script_text,
-        "voice_id": HEYGEN_VOICE_ID,
-        "aspect_ratio": "9:16"
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "avatar",
+                    "avatar_id": avatar_id,
+                    "avatar_style": "normal"
+                },
+                "voice": {
+                    "type": "text",
+                    "input_text": script_text,
+                    "voice_id": HEYGEN_VOICE_ID
+                }
+            }
+        ],
+        "dimension": {
+            "width": 1080,
+            "height": 1920
+        }
     }
 
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
         if res.status_code == 200:
-            res_data = res.json().get("data", {})
-            video_id = res_data.get("video_id") or res_data.get("id")
+            res_data = res.json()
+            video_id = res_data.get("data", {}).get("video_id")
 
             if video_id:
                 generation_jobs[video_id] = email
-
-            print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
+                print(f"INFO:LeadLoop:HeyGen video generation task queued successfully! Video ID: {video_id}")
+            else:
+                print(f"ERROR:LeadLoop:HeyGen render failure. Payload: {res.text}")
         else:
-            print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
+            print(f"ERROR:LeadLoop:HeyGen render failure (HTTP {res.status_code}): {res.text}")
     except Exception as e:
         print(f"ERROR:LeadLoop:HeyGen dispatch error: {e}")
 
@@ -515,7 +512,7 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 
     if event_type in ["avatar_video.success", "complete", "completed"]:
         video_url = payload.get("data", {}).get("url") or payload.get("url") or payload.get("data", {}).get("video_url")
-        video_id = payload.get("data", {}).get("video_id") or payload.get("video_id") or payload.get("data", {}).get("id")
+        video_id = payload.get("data", {}).get("video_id") or payload.get("data", {}).get("id")
 
         recipient_email = generation_jobs.get(video_id, "customer@example.com")
 
@@ -547,7 +544,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.8.0",
+        "system": "LeadLoop Engine v5.1.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
