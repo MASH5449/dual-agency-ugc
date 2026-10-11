@@ -4,6 +4,8 @@ import random
 import asyncio
 import smtplib
 import requests
+import threading
+import time
 from typing import AsyncGenerator
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -11,7 +13,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.8.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.9.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -44,6 +46,75 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
 # Imported Female ElevenLabs Voice ID registered inside HeyGen
 HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
+
+# ------------------------------------------------------------------
+# AGENT X: TWITTER/X PROSPECTING WORKER
+# ------------------------------------------------------------------
+def run_agent_x_worker():
+    """
+    Background thread that polls X API v2 every 15 minutes for DTC skincare lead signals.
+    """
+    if not X_BEARER_TOKEN:
+        print("[Agent X] Credentials missing in environment. Worker sleeping.")
+        return
+
+    print("[Agent X] Worker thread active. Starting periodic prospect searches...")
+
+    # Keywords tailored specifically for e-commerce, cosmetics, and skincare lead intent
+    search_queries = [
+        '(skincare OR cosmetics) ("looking for UGC" OR "need video ads" OR "UGC creators")',
+        '("DTC skincare" OR "beauty brand") ("scaling ads" OR "ROAS" OR "creative testing")'
+    ]
+
+    headers = {
+        "Authorization": f"Bearer {X_BEARER_TOKEN}",
+        "User-Agent": "LeadLoopAgentX/1.0"
+    }
+
+    while True:
+        try:
+            query = random.choice(search_queries)
+            url = f"https://api.twitter.com/2/tweets/search/recent?query={requests.utils.quote(query)}&max_results=10&tweet.fields=created_at,author_id&expansions=author_id&user.fields=username,name,description"
+
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if response.status_code == 200:
+                data = response.json()
+                tweets = data.get("data", [])
+                users = {u["id"]: u for u in data.get("includes", {}).get("users", [])}
+
+                found_count = 0
+                for tweet in tweets:
+                    author_id = tweet.get("author_id")
+                    author_info = users.get(author_id, {})
+                    username = author_info.get("username", "unknown")
+                    name = author_info.get("name", "Brand Lead")
+
+                    lead_entry = {
+                        "source": "Agent X (Twitter)",
+                        "company": name,
+                        "handle": f"@{username}",
+                        "tweet_id": tweet.get("id"),
+                        "text": tweet.get("text"),
+                        "profile_url": f"https://x.com/{username}"
+                    }
+
+                    # Avoid duplicate lead entries
+                    if not any(l.get("tweet_id") == tweet.get("id") for lattr in leads_db for l in [lattr] if isinstance(l, dict)):
+                        leads_db.append(lead_entry)
+                        found_count += 1
+
+                print(f"[Agent X] Search completed for query: '{query[:30]}...'. Found {found_count} new prospect leads. Total in DB: {len(leads_db)}")
+            elif response.status_code == 429:
+                print("[Agent X] Rate limit reached. Backing off until next cycle.")
+            else:
+                print(f"[Agent X] API Error ({response.status_code}): {response.text}")
+
+        except Exception as e:
+            print(f"[Agent X] Execution error: {e}")
+
+        # Sleep for 15 minutes between polling rounds
+        time.sleep(900)
 
 # ------------------------------------------------------------------
 # DYNAMIC SKINCARE SCRIPT TEMPLATE ENGINE
@@ -154,7 +225,7 @@ def pause_instantly_lead(email: str):
         "email": email,
         "campaign_id": INSTANTLY_CAMPAIGN_ID
     }
-    
+
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         print(f"INFO:LeadLoop:Submitted lead pause job for {email} in Instantly (Status {response.status_code}).")
@@ -173,32 +244,32 @@ def get_valid_female_v3_look():
         if res.status_code == 200:
             raw_data = res.json().get("data", [])
             looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
-            
+
             female_looks = []
             for item in looks_list:
                 if isinstance(item, dict):
                     look_id = item.get("id") or item.get("look_id")
-                    gender = str(item.get("gender", "")).lower()
-                    name = item.get("name", "UGC Creator")
-                    
-                    # Filter strictly for female gender metadata
-                    if look_id and (gender == "female" or "woman" in gender or "female" in gender):
-                        female_looks.append({"id": look_id, "name": name})
-            
+                    name_str = str(item.get("name", "")).lower()
+                    tags_str = str(item.get("tags", "")).lower()
+                    gender_str = str(item.get("gender", "")).lower()
+
+                    combined_meta = f"{name_str} {tags_str} {gender_str}"
+
+                    # Explicitly filter male descriptors out
+                    if any(m in combined_meta for m in ["male", "man", "boy", "guy"]):
+                        if not any(f in combined_meta for f in ["female", "woman"]):
+                            continue
+
+                    if look_id:
+                        female_looks.append({"id": look_id, "name": item.get("name", "Creator")})
+
             if female_looks:
                 selected = random.choice(female_looks)
                 print(f"[Avatar Director] Filtered {len(female_looks)} female V3 looks. Selected: '{selected['name']}' ({selected['id']})")
                 return selected["id"]
-            else:
-                print("[Avatar Director] No gender metadata match found. Selecting first look from list.")
-                for item in looks_list:
-                    look_id = item.get("id") or item.get("look_id") if isinstance(item, dict) else item
-                    if look_id:
-                        return look_id
     except Exception as e:
         print(f"ERROR:LeadLoop:Failed to fetch V3 avatar looks dynamically: {e}")
 
-    # Default fallback
     return "745b64340bdf4789b3927c11f3911b2f"
 
 # ------------------------------------------------------------------
@@ -209,7 +280,6 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    # Strictly fetch a female avatar look ID matching the female voice model
     avatar_id = get_valid_female_v3_look()
     script_text = generate_skincare_script(company_name)
 
@@ -220,7 +290,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
     }
-    
+
     payload = {
         "type": "avatar",
         "avatar_id": avatar_id,
@@ -234,10 +304,10 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         if res.status_code == 200:
             res_data = res.json().get("data", {})
             video_id = res_data.get("video_id") or res_data.get("id")
-            
+
             if video_id:
                 generation_jobs[video_id] = email
-                
+
             print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
@@ -256,11 +326,11 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     event_type = payload.get("type")
-    
+
     if event_type in ["checkout.session.completed", "payment_intent.succeeded"]:
         data_object = payload.get("data", {}).get("object", {})
         customer_email = data_object.get("customer_details", {}).get("email") or data_object.get("receipt_email") or "customer@example.com"
-        
+
         custom_fields = data_object.get("custom_fields", [])
         company_name = "Your Business"
         if custom_fields and len(custom_fields) > 0:
@@ -290,17 +360,17 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "invalid_payload"}
 
     event_type = payload.get("event_type") or payload.get("type")
-    
+
     if event_type in ["avatar_video.success", "complete", "completed"]:
         video_url = payload.get("data", {}).get("url") or payload.get("url") or payload.get("data", {}).get("video_url")
         video_id = payload.get("data", {}).get("video_id") or payload.get("video_id") or payload.get("data", {}).get("id")
-        
+
         recipient_email = generation_jobs.get(video_id, "customer@example.com")
 
         if video_url:
             print(f"INFO:LeadLoop:HeyGen Render Completed. Video URL: {video_url}")
             await log_event("Fulfillment Agent", f"HeyGen Render Completed. Video MP4 generated.", "SUCCESS")
-            
+
             background_tasks.add_task(send_fulfillment_email, recipient_email, video_url)
             await log_event("Fulfillment Agent", f"Delivered video MP4 to {recipient_email}")
 
@@ -314,11 +384,19 @@ async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     run_lead_hunter()
 
-    if not X_BEARER_TOKEN:
-        print("[Agent X] Credentials missing in environment. Worker sleeping.")
-    else:
+    # Launch Agent X in its own dedicated background thread
+    if X_BEARER_TOKEN:
+        x_thread = threading.Thread(target=run_agent_x_worker, daemon=True)
+        x_thread.start()
         print("[Agent X] Credentials active. Initializing X worker thread.")
+    else:
+        print("[Agent X] Credentials missing in environment. Worker sleeping.")
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.8.0", "stored_leads": len(leads_db)}
+    return {
+        "status": "online",
+        "system": "LeadLoop Engine v3.9.0",
+        "stored_leads": len(leads_db),
+        "agent_x_active": bool(X_BEARER_TOKEN)
+    }
