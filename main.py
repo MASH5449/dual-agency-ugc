@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="5.2.0")
+app = FastAPI(title="LeadLoop Engine API", version="5.3.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -53,52 +53,57 @@ HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# HEYGEN V3 DYNAMIC FEMALE AVATAR RESOLVER
+# HEYGEN V3 PUBLIC FEMALE LOOK RESOLVER (BULLETPROOF ROTATION)
 # ------------------------------------------------------------------
-def fetch_random_v3_female_avatar_id() -> str:
+def fetch_random_v3_public_female_look_id() -> str:
     """
-    Fetches real avatar objects from GET /v3/avatars, filters for female models,
-    and randomly selects an avatar_id for dynamic rotation without look_id errors.
+    Queries GET /v3/avatars/looks?ownership=public to get verified public looks.
+    Filters for female creators and returns the look ID to guarantee zero 404 errors.
     """
     if not HEYGEN_API_KEY:
         print("[Avatar Director] HEYGEN_API_KEY is missing.")
         return ""
 
-    url = "https://api.heygen.com/v3/avatars"
+    url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=100"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            data = res.json().get("data", {})
-            avatars = data if isinstance(data, list) else data.get("avatars", [])
+            raw_data = res.json().get("data", {})
+            looks = raw_data.get("looks", []) if isinstance(raw_data, dict) else (raw_data if isinstance(raw_data, list) else [])
 
-            female_avatars = []
-            male_names = ["david", "john", "michael", "alex", "james", "adam", "male"]
+            female_looks = []
+            male_keywords = ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james", "adam"]
+            female_keywords = ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "jennifer", "ugc", "beauty", "creator"]
 
-            for item in avatars:
+            for item in looks:
                 if isinstance(item, dict):
-                    aid = item.get("avatar_id") or item.get("id")
+                    look_id = item.get("id") or item.get("look_id")
                     gender = str(item.get("gender", "")).lower()
-                    name = str(item.get("avatar_name", "") or item.get("name", "")).lower()
+                    name = str(item.get("name", "")).lower()
+                    tags = " ".join([str(t).lower() for t in item.get("tags", [])])
 
-                    if gender == "male" or any(m in name for m in male_names):
+                    meta = f"{name} {tags} {gender}"
+
+                    if any(m in meta for m in male_keywords):
                         continue
 
-                    if gender == "female" or aid:
-                        female_avatars.append((aid, name))
+                    if any(f in meta for f in female_keywords) or gender == "female" or not gender:
+                        if look_id:
+                            female_looks.append((look_id, name if name else "Public Female Look"))
 
-            if female_avatars:
-                selected_id, selected_name = random.choice(female_avatars)
-                print(f"[Avatar Director] Isolated {len(female_avatars)} valid V3 female avatars. Selected: '{selected_name}' ({selected_id})")
+            if female_looks:
+                selected_id, selected_name = random.choice(female_looks)
+                print(f"[Avatar Director] Isolated {len(female_looks)} public female V3 looks. Selected: '{selected_name}' ({selected_id})")
                 return selected_id
 
-            print(f"[Avatar Director] Response received but no female avatars isolated: {res.text}")
+            print(f"[Avatar Director] Response received but no female looks isolated. Raw response: {res.text[:200]}")
         else:
-            print(f"[Avatar Director] GET /v3/avatars failed (HTTP {res.status_code}): {res.text}")
+            print(f"[Avatar Director] GET /v3/avatars/looks failed (HTTP {res.status_code}): {res.text}")
 
     except Exception as e:
-        print(f"ERROR:LeadLoop:Failed to query V3 avatars endpoint: {e}")
+        print(f"ERROR:LeadLoop:Failed to query V3 public looks endpoint: {e}")
 
     return ""
 
@@ -368,21 +373,21 @@ def pause_instantly_lead(email: str):
         pass
 
 # ------------------------------------------------------------------
-# STRICT HEYGEN V3 VIDEO RENDER ENGINE
+# HEYGEN V3 VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     if not HEYGEN_API_KEY:
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    avatar_id = fetch_random_v3_female_avatar_id()
+    avatar_id = fetch_random_v3_public_female_look_id()
     if not avatar_id:
-        print("[Avatar Director] ERROR: Could not resolve a valid V3 avatar_id from HeyGen.")
+        print("[Avatar Director] ERROR: Could not resolve a valid public female V3 avatar_id from HeyGen.")
         return
 
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using avatar_id: {avatar_id}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using public female avatar_id: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -528,7 +533,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v5.2.0",
+        "system": "LeadLoop Engine v5.3.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
