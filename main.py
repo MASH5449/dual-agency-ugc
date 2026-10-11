@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="2.0.1")
+app = FastAPI(title="LeadLoop Engine API", version="2.0.2")
 
 # Enable CORS for all incoming frontend and webhook requests
 app.add_middleware(
@@ -162,7 +162,7 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
+# HEYGEN MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     if not HEYGEN_API_KEY:
@@ -178,7 +178,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
 
     print(f"[Avatar Director] Dispatching render with actor: {selected_actor['name']}")
 
-    url = "https://api.heygen.com/v3/videos"
+    url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -186,7 +186,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     
     script_text = f"Hey {company_name}! Thanks for claiming your custom skincare video creative. Here is your brand demonstration!"
 
-    # Strictly V3-compliant payload format
+    # Clean, compliant payload format
     payload = {
         "video_inputs": [
             {
@@ -197,23 +197,22 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
                 },
                 "voice": {
                     "type": "text",
-                    "input_text": script_text,
-                    "voice_id": "1bd001e7e50f421d891986aad5158bc8" # Standard Female English Voice
+                    "input_text": script_text
                 }
             }
         ],
-        "aspect_ratio": "9:16" # V3 format for portrait video
+        "dimension": {
+            "width": 1080,
+            "height": 1920
+        }
     }
 
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
         if res.status_code == 200:
             video_id = res.json().get("data", {}).get("video_id")
-            
-            # Save the mapping so the webhook knows who to email later
             if video_id:
                 generation_jobs[video_id] = email
-                
             print(f"INFO:LeadLoop:HeyGen generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
@@ -271,7 +270,6 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
         video_url = payload.get("data", {}).get("url") or payload.get("url")
         video_id = payload.get("data", {}).get("video_id") or payload.get("video_id")
         
-        # Look up the recipient email from our memory store
         recipient_email = generation_jobs.get(video_id, "customer@example.com")
 
         if video_url:
@@ -299,4 +297,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v2.0.1", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v2.0.2", "stored_leads": len(leads_db)}
