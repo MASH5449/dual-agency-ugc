@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="2.0.2")
+app = FastAPI(title="LeadLoop Engine API", version="2.1.0")
 
 # Enable CORS for all incoming frontend and webhook requests
 app.add_middleware(
@@ -41,6 +41,9 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
+
+# Standard, highly reliable female voice ID for HeyGen V3
+DEFAULT_FEMALE_VOICE_ID = "1bd001e7e50f421d891986aad5e3e5d2"
 
 # ------------------------------------------------------------------
 # CURATED SKINCARE & COSMETICS AVATAR ROSTER MATRIX
@@ -162,7 +165,7 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN MULTI-AVATAR VIDEO RENDER ENGINE
+# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     if not HEYGEN_API_KEY:
@@ -178,7 +181,7 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
 
     print(f"[Avatar Director] Dispatching render with actor: {selected_actor['name']}")
 
-    url = "https://api.heygen.com/v2/video/generate"
+    url = "https://api.heygen.com/v3/videos"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -186,21 +189,13 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     
     script_text = f"Hey {company_name}! Thanks for claiming your custom skincare video creative. Here is your brand demonstration!"
 
-    # Clean, compliant payload format
+    # Strict HeyGen V3 JSON Specification Payload
     payload = {
-        "video_inputs": [
-            {
-                "character": {
-                    "type": "avatar",
-                    "avatar_id": selected_actor["avatar_id"],
-                    "avatar_style": "normal"
-                },
-                "voice": {
-                    "type": "text",
-                    "input_text": script_text
-                }
-            }
-        ],
+        "type": "avatar",
+        "avatar_id": selected_actor["avatar_id"],
+        "script": script_text,
+        "voice_id": DEFAULT_FEMALE_VOICE_ID,
+        "aspect_ratio": "9:16",
         "dimension": {
             "width": 1080,
             "height": 1920
@@ -210,9 +205,12 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=15)
         if res.status_code == 200:
-            video_id = res.json().get("data", {}).get("video_id")
+            res_data = res.json().get("data", {})
+            video_id = res_data.get("video_id") or res_data.get("id")
+            
             if video_id:
                 generation_jobs[video_id] = email
+                
             print(f"INFO:LeadLoop:HeyGen generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
@@ -267,8 +265,8 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
     event_type = payload.get("event_type") or payload.get("type")
     
     if event_type in ["avatar_video.success", "complete", "completed"]:
-        video_url = payload.get("data", {}).get("url") or payload.get("url")
-        video_id = payload.get("data", {}).get("video_id") or payload.get("video_id")
+        video_url = payload.get("data", {}).get("url") or payload.get("url") or payload.get("data", {}).get("video_url")
+        video_id = payload.get("data", {}).get("video_id") or payload.get("video_id") or payload.get("data", {}).get("id")
         
         recipient_email = generation_jobs.get(video_id, "customer@example.com")
 
@@ -297,4 +295,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v2.0.2", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v2.1.0", "stored_leads": len(leads_db)}
