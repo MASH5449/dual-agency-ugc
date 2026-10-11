@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="5.4.0")
+app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -49,74 +49,68 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 # Imported Female ElevenLabs Voice ID registered inside HeyGen
 HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 
-# Hardcoded pool of verified public V3 female look IDs for fail-safe rotation
-VERIFIED_PUBLIC_FEMALE_LOOKS = [
-    "745b64340bdf4789b3927c11f3911b2f",
-    "e76c0b3918a14866aa95e01abd339204",
-    "3b76a084c6794692a7e78d150b06ba67",
-    "3f3a1f33f38148bfae345b69f64a2e5d"
-]
-
 # Initialize OpenAI Client
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# HEYGEN V3 PUBLIC FEMALE LOOK RESOLVER
+# HEYGEN V3 DYNAMIC LIVE AVATAR RESOLVER (ZERO HARDCODED IDS)
 # ------------------------------------------------------------------
-def fetch_random_v3_public_female_look_id() -> str:
+def fetch_random_v3_female_avatar_id() -> str:
     """
-    Queries GET /v3/avatars/looks?ownership=public (limit=50) to fetch public looks.
-    Filters for female creators and rotates them randomly. Falls back to verified public V3 IDs.
+    Queries GET /v3/avatars live and picks directly from the active avatar list
+    returned by your HeyGen API key. Prevents all 404 avatar_not_found errors.
     """
     if not HEYGEN_API_KEY:
-        print("[Avatar Director] HEYGEN_API_KEY is missing. Using default fallback look.")
-        return random.choice(VERIFIED_PUBLIC_FEMALE_LOOKS)
+        print("[Avatar Director] HEYGEN_API_KEY is missing.")
+        return ""
 
-    # Note: HeyGen enforces a max limit of 50 on this endpoint
-    url = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=50"
+    url = "https://api.heygen.com/v3/avatars"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            raw_data = res.json().get("data", {})
-            looks = raw_data.get("looks", []) if isinstance(raw_data, dict) else (raw_data if isinstance(raw_data, list) else [])
+            raw_data = res.json().get("data", [])
+            avatars = raw_data if isinstance(raw_data, list) else raw_data.get("avatars", [])
 
-            female_looks = []
-            male_keywords = ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james", "adam"]
-            female_keywords = ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "jennifer", "ugc", "beauty", "creator"]
+            female_ids = []
+            all_ids = []
 
-            for item in looks:
+            male_names = ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james", "adam"]
+            female_names = ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "jennifer", "ugc", "beauty", "creator"]
+
+            for item in avatars:
                 if isinstance(item, dict):
-                    look_id = item.get("id") or item.get("look_id")
+                    aid = item.get("avatar_id") or item.get("id")
                     gender = str(item.get("gender", "")).lower()
-                    name = str(item.get("name", "")).lower()
-                    tags = " ".join([str(t).lower() for t in item.get("tags", [])])
+                    name = str(item.get("avatar_name", "") or item.get("name", "")).lower()
 
-                    meta = f"{name} {tags} {gender}"
+                    if aid:
+                        all_ids.append((aid, name if name else "Active Avatar"))
 
-                    if any(m in meta for m in male_keywords):
-                        continue
+                        if any(m in name for m in male_names) or gender == "male":
+                            continue
 
-                    if any(f in meta for f in female_keywords) or gender == "female" or not gender:
-                        if look_id:
-                            female_looks.append((look_id, name if name else "Public Female Look"))
+                        if gender == "female" or any(f in name for f in female_names) or not gender:
+                            female_ids.append((aid, name if name else "Female Avatar"))
 
-            if female_looks:
-                selected_id, selected_name = random.choice(female_looks)
-                print(f"[Avatar Director] Isolated {len(female_looks)} public female V3 looks. Selected: '{selected_name}' ({selected_id})")
+            if female_ids:
+                selected_id, selected_name = random.choice(female_ids)
+                print(f"[Avatar Director] Isolated {len(female_ids)} live female V3 avatars. Selected: '{selected_name}' ({selected_id})")
+                return selected_id
+            elif all_ids:
+                selected_id, selected_name = random.choice(all_ids)
+                print(f"[Avatar Director] Selected live avatar from account pool: '{selected_name}' ({selected_id})")
                 return selected_id
 
-            print(f"[Avatar Director] Response received but no female looks isolated.")
+            print(f"[Avatar Director] GET /v3/avatars response contained no items: {res.text[:200]}")
         else:
-            print(f"[Avatar Director] GET /v3/avatars/looks failed (HTTP {res.status_code}): {res.text}")
+            print(f"[Avatar Director] GET /v3/avatars failed (HTTP {res.status_code}): {res.text}")
 
     except Exception as e:
-        print(f"ERROR:LeadLoop:Failed to query V3 public looks endpoint: {e}")
+        print(f"ERROR:LeadLoop:Failed to query V3 avatars endpoint: {e}")
 
-    fallback_id = random.choice(VERIFIED_PUBLIC_FEMALE_LOOKS)
-    print(f"[Avatar Director] Using guaranteed public V3 fallback look ID: {fallback_id}")
-    return fallback_id
+    return ""
 
 # ------------------------------------------------------------------
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
@@ -391,10 +385,14 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    avatar_id = fetch_random_v3_public_female_look_id()
+    avatar_id = fetch_random_v3_female_avatar_id()
+    if not avatar_id:
+        print("[Avatar Director] ERROR: Could not resolve a valid live V3 avatar_id from HeyGen.")
+        return
+
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using public female avatar_id: {avatar_id}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using live avatar_id: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -540,7 +538,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v5.4.0",
+        "system": "LeadLoop Engine v5.5.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
