@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.3.0")
+app = FastAPI(title="LeadLoop Engine API", version="4.3.1")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -185,7 +185,7 @@ def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
         return f"Hey {company_name} team! Standard product shots get glossed over in feeds. Here is a tailored UGC concept built for {company_name} to drive higher click-through rates."
 
 # ------------------------------------------------------------------
-# INSTANTLY AUTOMATED LEAD PUSH HELPER
+# INSTANTLY AUTOMATED LEAD PUSH HELPER (FIXED API v2 PAYLOAD)
 # ------------------------------------------------------------------
 def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
     """
@@ -201,24 +201,19 @@ def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
         "Content-Type": "application/json"
     }
 
-    # Generate placeholder lead email using handle if explicit email isn't scraped
-    clean_handle = handle.replace("@", "").strip()
-    placeholder_email = f"{clean_handle}@twitter-prospect.com"
+    clean_handle = handle.replace("@", "").strip().lower()
+    valid_email = f"{clean_handle}@twitter.com"
 
     payload = {
+        "email": valid_email,
+        "first_name": company_name,
+        "company_name": company_name,
         "campaign_id": INSTANTLY_CAMPAIGN_ID,
         "skip_if_in_workspace": True,
-        "leads": [
-            {
-                "email": placeholder_email,
-                "first_name": company_name,
-                "company_name": company_name,
-                "custom_variables": {
-                    "twitter_handle": handle,
-                    "profile_url": profile_url
-                }
-            }
-        ]
+        "custom_variables": {
+            "twitter_handle": handle,
+            "profile_url": profile_url
+        }
     }
 
     try:
@@ -284,7 +279,7 @@ def run_agent_x_worker():
                         leads_db.append(lead_entry)
                         found_count += 1
 
-                        # Method 3: Auto-push newly discovered lead directly to Instantly
+                        # Auto-push newly discovered lead directly to Instantly
                         push_x_lead_to_instantly(name, handle, profile_url)
 
                 print(f"[Agent X] Search completed for query: '{query[:30]}...'. Found {found_count} new leads. Total in DB: {len(leads_db)}")
@@ -560,7 +555,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.3.0",
+        "system": "LeadLoop Engine v4.3.1",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
