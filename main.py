@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.4.0")
+app = FastAPI(title="LeadLoop Engine API", version="4.5.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -54,7 +54,7 @@ HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# GUARANTEED FEMALE BASE AVATARS (EXPLICIT HEYGEN V2/V3 VERIFIED)
+# GUARANTEED FEMALE BASE AVATARS
 # ------------------------------------------------------------------
 VERIFIED_FEMALE_AVATARS = [
     "Jennifer_public_3_20240108",   # Female UGC Creator
@@ -74,7 +74,7 @@ def get_valid_female_v3_look() -> str:
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             raw_data = res.json().get("data", {})
             avatars = raw_data.get("avatars", [])
@@ -96,9 +96,8 @@ def get_valid_female_v3_look() -> str:
                 return selected
 
     except Exception as e:
-        print(f"ERROR:LeadLoop:Avatar lookup error: {e}")
+        print(f"ERROR:LeadLoop:Avatar lookup fallback triggered: {e}")
 
-    # ABSOLUTE HARD FALLBACK: Pick directly from hardcoded female base avatars
     fallback_selected = random.choice(VERIFIED_FEMALE_AVATARS)
     print(f"[Avatar Director] Using guaranteed female avatar ID: {fallback_selected}")
     return fallback_selected
@@ -107,9 +106,6 @@ def get_valid_female_v3_look() -> str:
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
 # ------------------------------------------------------------------
 def scrape_brand_website(website_url: str) -> str:
-    """
-    Extracts core text content from the brand's landing page.
-    """
     if not website_url:
         return ""
 
@@ -133,9 +129,6 @@ def scrape_brand_website(website_url: str) -> str:
     return ""
 
 def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
-    """
-    Scrapes landing page text and uses GPT-4o to write a custom UGC script.
-    """
     brand_context = scrape_brand_website(website_url)
 
     if not openai_client:
@@ -182,9 +175,6 @@ def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
 # INSTANTLY AUTOMATED LEAD PUSH HELPER
 # ------------------------------------------------------------------
 def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
-    """
-    Pushes leads discovered by Agent X directly into Instantly.ai campaigns.
-    """
     if not INSTANTLY_API_KEY or not INSTANTLY_CAMPAIGN_ID:
         print("[Agent X] Skipping Instantly push: Missing INSTANTLY_API_KEY or INSTANTLY_CAMPAIGN_ID.")
         return
@@ -272,8 +262,6 @@ def run_agent_x_worker():
                     if not any(l.get("tweet_id") == tweet.get("id") for lattr in leads_db for l in [lattr] if isinstance(l, dict)):
                         leads_db.append(lead_entry)
                         found_count += 1
-
-                        # Auto-push newly discovered lead directly to Instantly
                         push_x_lead_to_instantly(name, handle, profile_url)
 
                 print(f"[Agent X] Search completed for query: '{query[:30]}...'. Found {found_count} new leads. Total in DB: {len(leads_db)}")
@@ -391,7 +379,7 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V2/V3 MULTI-AVATAR VIDEO RENDER ENGINE
+# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE (FIXED TTS PAYLOAD)
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     if not HEYGEN_API_KEY:
@@ -403,7 +391,7 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
 
     print(f"[Avatar Director] Dispatching render for '{company_name}' using female avatar: {avatar_id}")
 
-    url = "https://api.heygen.com/v2/video/generate"
+    url = "https://api.heygen.com/v3/videos"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
@@ -418,11 +406,8 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
                     "avatar_style": "normal"
                 },
                 "voice": {
-                    "type": "audio",
-                    "voice_id": HEYGEN_VOICE_ID
-                },
-                "script": {
                     "type": "text",
+                    "voice_id": HEYGEN_VOICE_ID,
                     "input_text": script_text
                 }
             }
@@ -483,7 +468,6 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
         data_object = payload.get("data", {}).get("object", {})
         customer_email = data_object.get("customer_details", {}).get("email") or data_object.get("receipt_email") or "customer@example.com"
 
-        # Parse Stripe Custom Fields for Company Name and Website URL
         custom_fields = data_object.get("custom_fields", [])
         company_name = "Your Business"
         website_url = ""
@@ -563,7 +547,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.4.0",
+        "system": "LeadLoop Engine v4.5.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
@@ -571,5 +555,4 @@ def health_check():
 
 @app.get("/leads")
 def get_leads():
-    """Returns all stored leads extracted by Agent X."""
     return {"total": len(leads_db), "leads": leads_db}
