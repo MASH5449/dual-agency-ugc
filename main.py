@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.3.1")
+app = FastAPI(title="LeadLoop Engine API", version="4.4.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -54,59 +54,53 @@ HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# VERIFIED FEMALE AVATAR LOOK RESOLVER (BULLETPROOF GENDER MATCH)
+# GUARANTEED FEMALE BASE AVATARS (EXPLICIT HEYGEN V2/V3 VERIFIED)
 # ------------------------------------------------------------------
-VERIFIED_FEMALE_LOOKS = [
-    "745b64340bdf4789b3927c11f3911b2f",  # Female UGC Model
-    "e76c0b3918a14866aa95e01abd339204",  # Female Creator
-    "3b76a084c6794692a7e78d150b06ba67",  # Female Casual
-    "3f3a1f33f38148bfae345b69f64a2e5d"   # Female Creator Look
+VERIFIED_FEMALE_AVATARS = [
+    "Jennifer_public_3_20240108",   # Female UGC Creator
+    "Sarah_public_2_20240108",      # Female Casual Look
+    "Emma_public_1_20240108",       # Female Beauty Creator
+    "Chloe_public_3_20240108"        # Female Modern UGC
 ]
 
 def get_valid_female_v3_look() -> str:
     """
-    Fetches avatar looks from HeyGen V3 and strictly filters for female models.
-    Falls back exclusively to verified female IDs to guarantee gender matching.
+    Returns a guaranteed female base avatar ID to completely eliminate male fallbacks.
     """
     if not HEYGEN_API_KEY:
-        return random.choice(VERIFIED_FEMALE_LOOKS)
+        return random.choice(VERIFIED_FEMALE_AVATARS)
 
-    url = "https://api.heygen.com/v3/avatars/looks"
+    url = "https://api.heygen.com/v2/avatars"
     headers = {"X-Api-Key": HEYGEN_API_KEY}
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            raw_data = res.json().get("data", [])
-            looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
+            raw_data = res.json().get("data", {})
+            avatars = raw_data.get("avatars", [])
 
-            female_looks = []
-            for item in looks_list:
+            female_avatars = []
+            for item in avatars:
                 if isinstance(item, dict):
-                    look_id = item.get("id") or item.get("look_id")
-                    name = str(item.get("name", "")).lower()
-                    tags = str(item.get("tags", "")).lower()
+                    avatar_id = item.get("avatar_id")
                     gender = str(item.get("gender", "")).lower()
+                    name = str(item.get("avatar_name", "")).lower()
 
-                    meta = f"{name} {tags} {gender}"
+                    if gender == "female" or any(f in name for f in ["jennifer", "sarah", "emma", "chloe", "woman", "girl"]):
+                        if avatar_id:
+                            female_avatars.append(avatar_id)
 
-                    if any(m in meta for m in ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james"]):
-                        continue
-
-                    if any(f in meta for f in ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "ugc"]):
-                        if look_id:
-                            female_looks.append(look_id)
-
-            if female_looks:
-                selected = random.choice(female_looks)
-                print(f"[Avatar Director] Isolated {len(female_looks)} female looks. Selected: {selected}")
+            if female_avatars:
+                selected = random.choice(female_avatars)
+                print(f"[Avatar Director] Isolated {len(female_avatars)} female avatars. Selected: {selected}")
                 return selected
 
     except Exception as e:
-        print(f"ERROR:LeadLoop:Dynamic avatar lookup failed: {e}")
+        print(f"ERROR:LeadLoop:Avatar lookup error: {e}")
 
-    fallback_selected = random.choice(VERIFIED_FEMALE_LOOKS)
-    print(f"[Avatar Director] Using guaranteed female fallback look ID: {fallback_selected}")
+    # ABSOLUTE HARD FALLBACK: Pick directly from hardcoded female base avatars
+    fallback_selected = random.choice(VERIFIED_FEMALE_AVATARS)
+    print(f"[Avatar Director] Using guaranteed female avatar ID: {fallback_selected}")
     return fallback_selected
 
 # ------------------------------------------------------------------
@@ -185,7 +179,7 @@ def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
         return f"Hey {company_name} team! Standard product shots get glossed over in feeds. Here is a tailored UGC concept built for {company_name} to drive higher click-through rates."
 
 # ------------------------------------------------------------------
-# INSTANTLY AUTOMATED LEAD PUSH HELPER (FIXED API v2 PAYLOAD)
+# INSTANTLY AUTOMATED LEAD PUSH HELPER
 # ------------------------------------------------------------------
 def push_x_lead_to_instantly(company_name: str, handle: str, profile_url: str):
     """
@@ -397,7 +391,7 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
+# HEYGEN V2/V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
     if not HEYGEN_API_KEY:
@@ -405,24 +399,38 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         return
 
     avatar_id = get_valid_female_v3_look()
-    
-    # Generate website-aware AI script via GPT-4o
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using female look: {avatar_id}")
+    print(f"[Avatar Director] Dispatching render for '{company_name}' using female avatar: {avatar_id}")
 
-    url = "https://api.heygen.com/v3/videos"
+    url = "https://api.heygen.com/v2/video/generate"
     headers = {
         "X-Api-Key": HEYGEN_API_KEY,
         "Content-Type": "application/json"
     }
 
     payload = {
-        "type": "avatar",
-        "avatar_id": avatar_id,
-        "script": script_text,
-        "voice_id": HEYGEN_VOICE_ID,
-        "aspect_ratio": "9:16"
+        "video_inputs": [
+            {
+                "character": {
+                    "type": "avatar",
+                    "avatar_id": avatar_id,
+                    "avatar_style": "normal"
+                },
+                "voice": {
+                    "type": "audio",
+                    "voice_id": HEYGEN_VOICE_ID
+                },
+                "script": {
+                    "type": "text",
+                    "input_text": script_text
+                }
+            }
+        ],
+        "dimension": {
+            "width": 1080,
+            "height": 1920
+        }
     }
 
     try:
@@ -434,7 +442,7 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
             if video_id:
                 generation_jobs[video_id] = email
 
-            print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
+            print(f"INFO:LeadLoop:HeyGen video generation task queued successfully! Video ID: {video_id}")
         else:
             print(f"ERROR:LeadLoop:HeyGen render failure: {res.text}")
     except Exception as e:
@@ -555,7 +563,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.3.1",
+        "system": "LeadLoop Engine v4.4.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
