@@ -46,7 +46,9 @@ from db import STATUS_VIDEO_QUEUED
 # ---------------------------------------------------------------------------
 
 HEYGEN_API_BASE = "https://api.heygen.com"
-HEYGEN_LOOKS_URL = f"{HEYGEN_API_BASE}/v3/avatars/looks?ownership=public&limit=1"
+#: How many public looks to fetch as render candidates (fallback on 404).
+HEYGEN_LOOKS_LIMIT = 10
+HEYGEN_LOOKS_URL = f"{HEYGEN_API_BASE}/v3/avatars/looks?ownership=public&limit={HEYGEN_LOOKS_LIMIT}"
 HEYGEN_VIDEOS_URL = f"{HEYGEN_API_BASE}/v3/videos"
 HEYGEN_ASPECT_RATIO = "9:16"
 #: Used only if the look's own default voice is missing (same fallback the
@@ -266,7 +268,10 @@ class HeyGenVideoProvider(VideoProvider):
             message = f"HTTP {exc.code} from {url}: {details[:500]}"
             if exc.code in (408, 409, 425, 429) or exc.code >= 500:
                 raise TransientError(message, http_status=exc.code) from exc
-            raise PermanentError(message, http_status=exc.code) from exc
+            error = PermanentError(message, http_status=exc.code)
+            # Keep the full body so callers can classify the error code.
+            error.body = details  # type: ignore[attr-defined]
+            raise error from exc
         except urllib.error.URLError as exc:
             raise TransientError(f"connection failed for {url}: {exc.reason}") from exc
         except (TimeoutError, ConnectionError, OSError) as exc:
@@ -293,21 +298,51 @@ class HeyGenVideoProvider(VideoProvider):
             rand=self.rand,
         )
 
-    def lookup_avatar(self) -> tuple[str, str]:
-        """Resolve a valid public avatar look id + voice id, dynamically."""
+    @staticmethod
+    def _is_avatar_not_found(exc: BaseException) -> bool:
+        """True for an HTTP 404 whose JSON body carries ``avatar_not_found``."""
+        if getattr(exc, "http_status", None) != 404:
+            return False
+        body = getattr(exc, "body", None)
+        if body is None:
+            body = str(exc)
+        try:
+            parsed = json.loads(body)
+        except (TypeError, ValueError):
+            return "avatar_not_found" in str(body)
+        error = parsed.get("error") if isinstance(parsed, dict) else None
+        if isinstance(error, dict):
+            code = error.get("code")
+        elif isinstance(error, str):
+            code = error
+        else:
+            code = parsed.get("code") if isinstance(parsed, dict) else None
+        return code == "avatar_not_found"
 
-        def _call() -> tuple[str, str]:
+    def lookup_avatar(self) -> list[tuple[str, str]]:
+        """Resolve candidate public avatar look ids + voice ids, dynamically.
+
+        Returns up to ``HEYGEN_LOOKS_LIMIT`` ``(avatar_id, voice_id)`` pairs in
+        API order, so a render can fall back if one look is unavailable.
+        """
+
+        def _call() -> list[tuple[str, str]]:
             self._pace()
             payload = self._http_json(HEYGEN_LOOKS_URL)
             looks = payload.get("data") or []
             if not looks:
                 raise PermanentError(error_payload("no public avatar look found"))
-            look = looks[0] or {}
-            avatar_id = look.get("id") or look.get("look_id")
-            voice_id = look.get("default_voice_id") or HEYGEN_FALLBACK_VOICE_ID
-            if not avatar_id:
+            candidates: list[tuple[str, str]] = []
+            for look in looks:
+                look = look or {}
+                avatar_id = look.get("id") or look.get("look_id")
+                if not avatar_id:
+                    continue
+                voice_id = look.get("default_voice_id") or HEYGEN_FALLBACK_VOICE_ID
+                candidates.append((str(avatar_id), str(voice_id)))
+            if not candidates:
                 raise PermanentError(error_payload("avatar look has no id"))
-            return str(avatar_id), str(voice_id)
+            return candidates
 
         return retry(
             _call,
@@ -326,30 +361,58 @@ class HeyGenVideoProvider(VideoProvider):
             self.log(reason)
             raise ProviderUnavailable(reason)
 
-        avatar_id, voice_id = self.lookup_avatar()
+        candidates = self.lookup_avatar()
 
-        def _call() -> dict:
-            self._pace()
-            return self._http_json(
-                HEYGEN_VIDEOS_URL,
-                payload={
-                    "type": "avatar",
-                    "avatar_id": avatar_id,
-                    "script": request.script,
-                    "voice_id": voice_id,
-                    "aspect_ratio": HEYGEN_ASPECT_RATIO,
-                },
-                method="POST",
+        def _create(avatar_id: str, voice_id: str) -> dict:
+            def _call() -> dict:
+                self._pace()
+                return self._http_json(
+                    HEYGEN_VIDEOS_URL,
+                    payload={
+                        "type": "avatar",
+                        "avatar_id": avatar_id,
+                        "script": request.script,
+                        "voice_id": voice_id,
+                        "aspect_ratio": HEYGEN_ASPECT_RATIO,
+                    },
+                    method="POST",
+                )
+
+            # A 404 is a PermanentError, so retry() raises it immediately.
+            return retry(
+                _call,
+                tag=self.tag,
+                log=self.log,
+                sleep=self.sleep,
+                rand=self.rand,
+                label="heygen video create",
             )
 
-        response = retry(
-            _call,
-            tag=self.tag,
-            log=self.log,
-            sleep=self.sleep,
-            rand=self.rand,
-            label="heygen video create",
-        )
+        response: dict = {}
+        attempted: list[str] = []
+        used_avatar_id = ""
+        for avatar_id, voice_id in candidates:
+            try:
+                response = _create(avatar_id, voice_id)
+            except PermanentError as exc:
+                if not self._is_avatar_not_found(exc):
+                    raise
+                attempted.append(avatar_id)
+                self.log(
+                    f"heygen avatar {avatar_id} not found (404 avatar_not_found); "
+                    "trying next public avatar"
+                )
+                continue
+            used_avatar_id = avatar_id
+            break
+        else:
+            message = (
+                f"HeyGen avatar_not_found for all {len(attempted)} public avatar "
+                f"candidate(s) tried: {', '.join(attempted)}"
+            )
+            self.log(f"heygen video create failed: {message}")
+            raise PermanentError(message, http_status=404)
+        self.log(f"heygen video create used avatar_id {used_avatar_id}")
         data = response.get("data") or {}
         video_id = data.get("video_id") or data.get("id")
         if not video_id:
