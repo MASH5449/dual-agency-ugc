@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.9.0")
+app = FastAPI(title="LeadLoop Engine API", version="4.1.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -48,19 +48,71 @@ X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 
 # ------------------------------------------------------------------
+# VERIFIED FEMALE AVATAR LOOK RESOLVER
+# ------------------------------------------------------------------
+VERIFIED_FEMALE_LOOKS = [
+    "745b64340bdf4789b3927c11f3911b2f",  # Female UGC Model
+    "e76c0b3918a14866aa95e01abd339204",  # Female Creator
+    "3b76a084c6794692a7e78d150b06ba67",  # Female Casual
+    "3f3a1f33f38148bfae345b69f64a2e5d"   # Female Creator Look
+]
+
+def get_valid_female_v3_look() -> str:
+    """
+    Fetches avatar looks from HeyGen V3 and strictly filters for female models.
+    Falls back exclusively to verified female IDs to guarantee gender matching.
+    """
+    if not HEYGEN_API_KEY:
+        return random.choice(VERIFIED_FEMALE_LOOKS)
+
+    url = "https://api.heygen.com/v3/avatars/looks"
+    headers = {"X-Api-Key": HEYGEN_API_KEY}
+
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            raw_data = res.json().get("data", [])
+            looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
+
+            female_looks = []
+            for item in looks_list:
+                if isinstance(item, dict):
+                    look_id = item.get("id") or item.get("look_id")
+                    name = str(item.get("name", "")).lower()
+                    tags = str(item.get("tags", "")).lower()
+                    gender = str(item.get("gender", "")).lower()
+
+                    meta = f"{name} {tags} {gender}"
+
+                    if any(m in meta for m in ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james"]):
+                        continue
+
+                    if any(f in meta for f in ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "ugc"]):
+                        if look_id:
+                            female_looks.append(look_id)
+
+            if female_looks:
+                selected = random.choice(female_looks)
+                print(f"[Avatar Director] Successfully isolated {len(female_looks)} female looks. Selected: {selected}")
+                return selected
+
+    except Exception as e:
+        print(f"ERROR:LeadLoop:Dynamic avatar lookup failed: {e}")
+
+    fallback_selected = random.choice(VERIFIED_FEMALE_LOOKS)
+    print(f"[Avatar Director] Using guaranteed female fallback look ID: {fallback_selected}")
+    return fallback_selected
+
+# ------------------------------------------------------------------
 # AGENT X: TWITTER/X PROSPECTING WORKER
 # ------------------------------------------------------------------
 def run_agent_x_worker():
-    """
-    Background thread that polls X API v2 every 15 minutes for DTC skincare lead signals.
-    """
     if not X_BEARER_TOKEN:
         print("[Agent X] Credentials missing in environment. Worker sleeping.")
         return
 
     print("[Agent X] Worker thread active. Starting periodic prospect searches...")
 
-    # Keywords tailored specifically for e-commerce, cosmetics, and skincare lead intent
     search_queries = [
         '(skincare OR cosmetics) ("looking for UGC" OR "need video ads" OR "UGC creators")',
         '("DTC skincare" OR "beauty brand") ("scaling ads" OR "ROAS" OR "creative testing")'
@@ -99,7 +151,6 @@ def run_agent_x_worker():
                         "profile_url": f"https://x.com/{username}"
                     }
 
-                    # Avoid duplicate lead entries
                     if not any(l.get("tweet_id") == tweet.get("id") for lattr in leads_db for l in [lattr] if isinstance(l, dict)):
                         leads_db.append(lead_entry)
                         found_count += 1
@@ -107,13 +158,14 @@ def run_agent_x_worker():
                 print(f"[Agent X] Search completed for query: '{query[:30]}...'. Found {found_count} new prospect leads. Total in DB: {len(leads_db)}")
             elif response.status_code == 429:
                 print("[Agent X] Rate limit reached. Backing off until next cycle.")
+            elif response.status_code == 402:
+                print("[Agent X] Payment required (402). Ensure X developer account credits are active.")
             else:
                 print(f"[Agent X] API Error ({response.status_code}): {response.text}")
 
         except Exception as e:
             print(f"[Agent X] Execution error: {e}")
 
-        # Sleep for 15 minutes between polling rounds
         time.sleep(900)
 
 # ------------------------------------------------------------------
@@ -146,7 +198,7 @@ async def log_event(agent: str, action: str, status: str = "OK"):
     await event_queue.put(json.dumps(event_data))
 
 # ------------------------------------------------------------------
-# LEAD HUNTER WORKER (In-Memory Pipeline)
+# LEAD HUNTER WORKER
 # ------------------------------------------------------------------
 def run_lead_hunter():
     print("[Lead Hunter] Initializing target extraction...")
@@ -170,7 +222,7 @@ async def stream_logs():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # ------------------------------------------------------------------
-# SMTP FULFILLMENT EMAIL (Port 587 STARTTLS)
+# SMTP FULFILLMENT EMAIL
 # ------------------------------------------------------------------
 def send_fulfillment_email(recipient_email: str, video_url: str):
     if not SMTP_USER or not SMTP_PASSWORD:
@@ -233,46 +285,6 @@ def pause_instantly_lead(email: str):
         print(f"ERROR:LeadLoop:Instantly pause request failed: {e}")
 
 # ------------------------------------------------------------------
-# STRICT FEMALE AVATAR LOOK RESOLVER (GENDER MATCHING)
-# ------------------------------------------------------------------
-def get_valid_female_v3_look():
-    url = "https://api.heygen.com/v3/avatars/looks"
-    headers = {"X-Api-Key": HEYGEN_API_KEY}
-
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            raw_data = res.json().get("data", [])
-            looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
-
-            female_looks = []
-            for item in looks_list:
-                if isinstance(item, dict):
-                    look_id = item.get("id") or item.get("look_id")
-                    name_str = str(item.get("name", "")).lower()
-                    tags_str = str(item.get("tags", "")).lower()
-                    gender_str = str(item.get("gender", "")).lower()
-
-                    combined_meta = f"{name_str} {tags_str} {gender_str}"
-
-                    # Explicitly filter male descriptors out
-                    if any(m in combined_meta for m in ["male", "man", "boy", "guy"]):
-                        if not any(f in combined_meta for f in ["female", "woman"]):
-                            continue
-
-                    if look_id:
-                        female_looks.append({"id": look_id, "name": item.get("name", "Creator")})
-
-            if female_looks:
-                selected = random.choice(female_looks)
-                print(f"[Avatar Director] Filtered {len(female_looks)} female V3 looks. Selected: '{selected['name']}' ({selected['id']})")
-                return selected["id"]
-    except Exception as e:
-        print(f"ERROR:LeadLoop:Failed to fetch V3 avatar looks dynamically: {e}")
-
-    return "745b64340bdf4789b3927c11f3911b2f"
-
-# ------------------------------------------------------------------
 # HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
 # ------------------------------------------------------------------
 def trigger_heygen_render(email: str, company_name: str, persona: str = None):
@@ -315,7 +327,29 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print(f"ERROR:LeadLoop:HeyGen dispatch error: {e}")
 
 # ------------------------------------------------------------------
-# STRIPE WEBHOOK ENDPOINT
+# TIER FULFILLMENT BATCH PROCESSOR
+# ------------------------------------------------------------------
+def process_tier_fulfillment(customer_email: str, company_name: str, tier: str):
+    """
+    Executes single or multi-video batch rendering based on purchased tier.
+    """
+    if tier == "Growth":
+        video_count = 10
+    elif tier == "Enterprise":
+        video_count = 30
+    else:
+        video_count = 1  # Starter default
+
+    print(f"[Fulfillment Agent] Starting batch fulfillment for {customer_email} ({tier} Tier -> {video_count} video(s))")
+
+    for i in range(video_count):
+        trigger_heygen_render(customer_email, company_name)
+        # Small delay between API dispatches to prevent rate limiting
+        if video_count > 1:
+            time.sleep(2)
+
+# ------------------------------------------------------------------
+# STRIPE WEBHOOK ENDPOINT (WITH TIER ROUTING)
 # ------------------------------------------------------------------
 @app.post("/webhook/stripe")
 @app.post("/webhook-stripe")
@@ -331,20 +365,31 @@ async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
         data_object = payload.get("data", {}).get("object", {})
         customer_email = data_object.get("customer_details", {}).get("email") or data_object.get("receipt_email") or "customer@example.com"
 
+        # Extract Company Name from Stripe custom fields
         custom_fields = data_object.get("custom_fields", [])
         company_name = "Your Business"
         if custom_fields and len(custom_fields) > 0:
             company_name = custom_fields[0].get("text", {}).get("value", "Your Business")
 
-        persona = payload.get("persona")
+        # Determine Tier by amount paid (cents in Stripe) or product description
+        amount_paid = data_object.get("amount_total", 0) / 100  # Convert cents to dollars
 
-        await log_event("Fulfillment Agent", f"Payment received from {customer_email}")
+        if amount_paid >= 800:
+            tier = "Enterprise"  # $1,199 Tier -> 30 Videos
+        elif amount_paid >= 300:
+            tier = "Growth"      # $499 Tier -> 10 Videos
+        else:
+            tier = "Starter"     # $199 Tier -> 1 Video
 
+        await log_event("Fulfillment Agent", f"Payment received from {customer_email} for {tier} Tier (${amount_paid:.0f})")
+
+        # Pause lead in Instantly outreach
         background_tasks.add_task(pause_instantly_lead, customer_email)
         await log_event("Outreach Agent", f"Lead {customer_email} paused in Instantly")
 
-        background_tasks.add_task(trigger_heygen_render, customer_email, company_name, persona)
-        await log_event("Avatar Director", f"Dispatched HeyGen rendering task for {company_name}")
+        # Queue tier-based video batch generation
+        background_tasks.add_task(process_tier_fulfillment, customer_email, company_name, tier)
+        await log_event("Avatar Director", f"Queued {tier} Tier video generation batch for {company_name}")
 
     return {"status": "success"}
 
@@ -384,7 +429,6 @@ async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     run_lead_hunter()
 
-    # Launch Agent X in its own dedicated background thread
     if X_BEARER_TOKEN:
         x_thread = threading.Thread(target=run_agent_x_worker, daemon=True)
         x_thread.start()
@@ -396,7 +440,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v3.9.0",
+        "system": "LeadLoop Engine v4.1.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN)
     }
