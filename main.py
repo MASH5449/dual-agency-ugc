@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.1.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.2.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -42,26 +42,24 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
 
-# ------------------------------------------------------------------
-# ELEVENLABS HIGH-RETENTION VOICE CONFIGURATION
-# ------------------------------------------------------------------
+# ElevenLabs Voice ID
 ELEVENLABS_VOICE_ID = "ogwqBH5bbF03DSbNiRNN"
 
 # ------------------------------------------------------------------
-# CURATED SKINCARE & COSMETICS AVATAR ROSTER MATRIX
+# CURATED SKINCARE & COSMETICS AVATAR ROSTER (PUBLIC V3 SLUGS)
 # ------------------------------------------------------------------
 AVATAR_ROSTER = {
     "skincare_ugc_1": {
-        "avatar_id": "8fe1340be40d453b855378de493bd42f",
-        "name": "Skincare UGC Specialist #1"
+        "avatar_id": "Daisy-casual-20240108",
+        "name": "Daisy (Skincare UGC Specialist #1)"
     },
     "skincare_ugc_2": {
-        "avatar_id": "1a195cfcbcbb4d47b1a0bb9714f081e5",
-        "name": "Beauty & Cosmetics Pitcher #2"
+        "avatar_id": "Katy-lifestyle-20240108",
+        "name": "Katy (Beauty & Cosmetics Pitcher #2)"
     },
     "skincare_ugc_3": {
-        "avatar_id": "fade5ca456604426ad66bcc97d24ddf9",
-        "name": "Brand Founder Representative #3"
+        "avatar_id": "Eleni-skincare-20240108",
+        "name": "Eleni (Brand Founder Representative #3)"
     }
 }
 
@@ -189,14 +187,12 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    # Select requested persona, or randomly assign one from the roster
     if persona and persona in AVATAR_ROSTER:
         selected_actor = AVATAR_ROSTER[persona]
     else:
         selected_key = random.choice(list(AVATAR_ROSTER.keys()))
         selected_actor = AVATAR_ROSTER[selected_key]
 
-    # Generate dynamic, personalized skincare script
     script_text = generate_skincare_script(company_name)
 
     print(f"[Avatar Director] Dispatching render for '{company_name}' using actor: {selected_actor['name']}")
@@ -207,7 +203,6 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         "Content-Type": "application/json"
     }
     
-    # Strict HeyGen V3 JSON Payload with ElevenLabs Voice Binding
     payload = {
         "type": "avatar",
         "avatar_id": selected_actor["avatar_id"],
@@ -309,4 +304,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.1.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.2.0", "stored_leads": len(leads_db)}
