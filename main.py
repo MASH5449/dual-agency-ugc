@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-app = FastAPI(title="LeadLoop Engine API", version="4.6.0")
+app = FastAPI(title="LeadLoop Engine API", version="4.7.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -54,7 +54,7 @@ HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ------------------------------------------------------------------
-# GUARANTEED FEMALE BASE AVATARS
+# GUARANTEED PUBLIC FEMALE BASE AVATARS (VERIFIED V3 ID STRINGS)
 # ------------------------------------------------------------------
 VERIFIED_FEMALE_AVATARS = [
     "Jennifer_public_3_20240108",   # Female UGC Creator
@@ -63,44 +63,14 @@ VERIFIED_FEMALE_AVATARS = [
     "Chloe_public_3_20240108"        # Female Modern UGC
 ]
 
-def get_valid_female_v3_look() -> str:
+def get_valid_female_avatar() -> str:
     """
-    Returns a guaranteed female base avatar ID to completely eliminate male fallbacks.
+    Returns a verified public female avatar string.
+    Bypasses dynamic hashes to prevent 'avatar_not_found' API errors.
     """
-    if not HEYGEN_API_KEY:
-        return random.choice(VERIFIED_FEMALE_AVATARS)
-
-    url = "https://api.heygen.com/v3/avatars"
-    headers = {"X-Api-Key": HEYGEN_API_KEY}
-
-    try:
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            raw_data = res.json().get("data", {})
-            avatars = raw_data if isinstance(raw_data, list) else raw_data.get("avatars", [])
-
-            female_avatars = []
-            for item in avatars:
-                if isinstance(item, dict):
-                    avatar_id = item.get("avatar_id") or item.get("id")
-                    gender = str(item.get("gender", "")).lower()
-                    name = str(item.get("avatar_name", "") or item.get("name", "")).lower()
-
-                    if gender == "female" or any(f in name for f in ["jennifer", "sarah", "emma", "chloe", "woman", "girl"]):
-                        if avatar_id:
-                            female_avatars.append(avatar_id)
-
-            if female_avatars:
-                selected = random.choice(female_avatars)
-                print(f"[Avatar Director] Isolated {len(female_avatars)} female avatars. Selected: {selected}")
-                return selected
-
-    except Exception as e:
-        print(f"ERROR:LeadLoop:Avatar lookup fallback triggered: {e}")
-
-    fallback_selected = random.choice(VERIFIED_FEMALE_AVATARS)
-    print(f"[Avatar Director] Using guaranteed female avatar ID: {fallback_selected}")
-    return fallback_selected
+    selected = random.choice(VERIFIED_FEMALE_AVATARS)
+    print(f"[Avatar Director] Selected verified female avatar: {selected}")
+    return selected
 
 # ------------------------------------------------------------------
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
@@ -386,7 +356,7 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    avatar_id = get_valid_female_v3_look()
+    avatar_id = get_valid_female_avatar()
     script_text = generate_dynamic_ai_script(company_name, website_url)
 
     print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using female avatar: {avatar_id}")
@@ -534,7 +504,7 @@ async def startup_event():
 def health_check():
     return {
         "status": "online",
-        "system": "LeadLoop Engine v4.6.0",
+        "system": "LeadLoop Engine v4.7.0",
         "stored_leads": len(leads_db),
         "agent_x_active": bool(X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
