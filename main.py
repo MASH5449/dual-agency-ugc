@@ -11,7 +11,7 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="LeadLoop Engine API", version="3.4.0")
+app = FastAPI(title="LeadLoop Engine API", version="3.5.0")
 
 # Enable CORS for incoming webhooks and clients
 app.add_middleware(
@@ -47,6 +47,13 @@ ELEVENLABS_VOICE_ID = "ogwqBH5bbF03DSbNiRNN"
 
 # Cache for fetched V3 avatar look IDs
 CACHED_V3_LOOKS = []
+
+# Hardcoded Backup Avatars
+BACKUP_AVATARS = [
+    "8fe1340be40d453b855378de493bd42f",
+    "1a195cfcbcbb4d47b1a0bb9714f081e5",
+    "fade5ca456604426ad66bcc97d24ddf9"
+]
 
 # ------------------------------------------------------------------
 # DYNAMIC SKINCARE SCRIPT TEMPLATE ENGINE
@@ -170,7 +177,6 @@ def pause_instantly_lead(email: str):
 def get_valid_v3_avatar_look():
     global CACHED_V3_LOOKS
     
-    # If we already fetched valid looks, pick one randomly
     if CACHED_V3_LOOKS:
         return random.choice(CACHED_V3_LOOKS)
 
@@ -180,21 +186,27 @@ def get_valid_v3_avatar_look():
     try:
         res = requests.get(url, headers=headers, timeout=10)
         if res.status_code == 200:
-            looks_data = res.json().get("data", {}).get("looks", [])
-            for look in looks_data:
-                look_id = look.get("id") or look.get("look_id")
+            raw_data = res.json().get("data", [])
+            
+            # Extract looks from list or dict
+            looks_list = raw_data if isinstance(raw_data, list) else raw_data.get("looks", [])
+            
+            for item in looks_list:
+                look_id = item.get("id") or item.get("look_id") if isinstance(item, dict) else item
                 if look_id:
                     CACHED_V3_LOOKS.append(look_id)
             
             if CACHED_V3_LOOKS:
                 selected_look = random.choice(CACHED_V3_LOOKS)
-                print(f"[Avatar Director] Fetched {len(CACHED_V3_LOOKS)} valid V3 looks. Selected: {selected_look}")
+                print(f"[Avatar Director] Successfully fetched {len(CACHED_V3_LOOKS)} valid V3 looks. Selected: {selected_look}")
                 return selected_look
     except Exception as e:
         print(f"ERROR:LeadLoop:Failed to fetch V3 avatar looks dynamically: {e}")
 
-    # Fallback to standard V3 public avatar look if endpoint fails
-    return "Daisy-casual-20240108"
+    # Fallback to random hardcoded avatar
+    fallback_id = random.choice(BACKUP_AVATARS)
+    print(f"[Avatar Director] Using backup avatar ID: {fallback_id}")
+    return fallback_id
 
 # ------------------------------------------------------------------
 # HEYGEN V3 MULTI-AVATAR VIDEO RENDER ENGINE
@@ -204,11 +216,10 @@ def trigger_heygen_render(email: str, company_name: str, persona: str = None):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    # Dynamically resolve an avatar look ID that is guaranteed to exist on your account
     avatar_id = get_valid_v3_avatar_look()
     script_text = generate_skincare_script(company_name)
 
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using look: {avatar_id}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using avatar: {avatar_id}")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -317,4 +328,4 @@ async def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "LeadLoop Engine v3.4.0", "stored_leads": len(leads_db)}
+    return {"status": "online", "system": "LeadLoop Engine v3.5.0", "stored_leads": len(leads_db)}
