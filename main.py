@@ -1,5 +1,7 @@
 import os
 import json
+import hmac
+import hashlib
 import random
 import asyncio
 import smtplib
@@ -45,9 +47,12 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
+# Outreach (Agent X, lead hunter) stays off until you explicitly turn it on.
+ENABLE_OUTREACH = os.getenv("ENABLE_OUTREACH", "").lower() in ("1", "true", "yes", "on")
 
-# Imported Female ElevenLabs Voice ID registered inside HeyGen
-HEYGEN_VOICE_ID = "7215dd7ccfcb432ea5659ab4390d162d"
+HEYGEN_LOOKS_URL = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=10"
+# Used only when a look does not carry its own default_voice_id.
+HEYGEN_FALLBACK_VOICE_ID = "2d5b0e6cf36f460aa7fc47e3eee4ba54"
 
 # Initialize OpenAI Client
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -55,62 +60,70 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 # ------------------------------------------------------------------
 # HEYGEN V3 DYNAMIC LIVE AVATAR RESOLVER (ZERO HARDCODED IDS)
 # ------------------------------------------------------------------
-def fetch_random_v3_female_avatar_id() -> str:
-    """
-    Queries GET /v3/avatars live and picks directly from the active avatar list
-    returned by your HeyGen API key. Prevents all 404 avatar_not_found errors.
+def fetch_avatar_candidates() -> list[tuple[str, str]]:
+    """Return (look_id, voice_id) pairs from GET /v3/avatars/looks.
+
+    POST /v3/videos needs a look id. GET /v3/avatars returns groups, and a
+    group id comes back as avatar_not_found. Prefer looks marked female.
     """
     if not HEYGEN_API_KEY:
         print("[Avatar Director] HEYGEN_API_KEY is missing.")
-        return ""
+        return []
 
-    url = "https://api.heygen.com/v3/avatars"
-    headers = {"X-Api-Key": HEYGEN_API_KEY}
-
+    headers = {"X-Api-Key": HEYGEN_API_KEY, "Accept": "application/json"}
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            raw_data = res.json().get("data", [])
-            avatars = raw_data if isinstance(raw_data, list) else raw_data.get("avatars", [])
-
-            female_ids = []
-            all_ids = []
-
-            male_names = ["male", " man ", " guy ", "boy", "david", "john", "michael", "alex", "james", "adam"]
-            female_names = ["female", "woman", "girl", "lady", "sarah", "emma", "chloe", "jennifer", "ugc", "beauty", "creator"]
-
-            for item in avatars:
-                if isinstance(item, dict):
-                    aid = item.get("avatar_id") or item.get("id")
-                    gender = str(item.get("gender", "")).lower()
-                    name = str(item.get("avatar_name", "") or item.get("name", "")).lower()
-
-                    if aid:
-                        all_ids.append((aid, name if name else "Active Avatar"))
-
-                        if any(m in name for m in male_names) or gender == "male":
-                            continue
-
-                        if gender == "female" or any(f in name for f in female_names) or not gender:
-                            female_ids.append((aid, name if name else "Female Avatar"))
-
-            if female_ids:
-                selected_id, selected_name = random.choice(female_ids)
-                print(f"[Avatar Director] Isolated {len(female_ids)} live female V3 avatars. Selected: '{selected_name}' ({selected_id})")
-                return selected_id
-            elif all_ids:
-                selected_id, selected_name = random.choice(all_ids)
-                print(f"[Avatar Director] Selected live avatar from account pool: '{selected_name}' ({selected_id})")
-                return selected_id
-
-            print(f"[Avatar Director] GET /v3/avatars response contained no items: {res.text[:200]}")
-        else:
-            print(f"[Avatar Director] GET /v3/avatars failed (HTTP {res.status_code}): {res.text}")
-
+        res = requests.get(HEYGEN_LOOKS_URL, headers=headers, timeout=15)
     except Exception as e:
-        print(f"ERROR:LeadLoop:Failed to query V3 avatars endpoint: {e}")
+        print(f"ERROR:LeadLoop:Failed to query avatar looks: {e}")
+        return []
 
-    return ""
+    if res.status_code != 200:
+        print(f"[Avatar Director] GET /v3/avatars/looks failed (HTTP {res.status_code}): {res.text[:300]}")
+        return []
+
+    looks = res.json().get("data") or []
+    preferred: list[tuple[str, str]] = []
+    rest: list[tuple[str, str]] = []
+    for look in looks:
+        if not isinstance(look, dict):
+            continue
+        avatar_id = look.get("id") or look.get("look_id")
+        if not avatar_id:
+            continue
+        voice_id = str(look.get("default_voice_id") or HEYGEN_FALLBACK_VOICE_ID)
+        pair = (str(avatar_id), voice_id)
+        if str(look.get("gender") or "").lower() in ("female", "woman"):
+            preferred.append(pair)
+        else:
+            rest.append(pair)
+
+    chosen = preferred or rest
+    print(f"[Avatar Director] {len(chosen)} look(s) ready ({len(preferred)} marked female).")
+    return chosen
+
+
+def stripe_event_ok(body: bytes, signature: str | None) -> bool:
+    """Check Stripe-Signature when STRIPE_WEBHOOK_SECRET is set. Unset = allow."""
+    if not STRIPE_WEBHOOK_SECRET:
+        print("[Stripe] STRIPE_WEBHOOK_SECRET unset. Webhook accepted without a signature check.")
+        return True
+    if not signature:
+        return False
+    parts = {}
+    for item in signature.split(","):
+        if "=" in item:
+            key, value = item.split("=", 1)
+            parts[key.strip()] = value.strip()
+    timestamp = parts.get("t")
+    signed = parts.get("v1")
+    if not timestamp or not signed:
+        return False
+    digest = hmac.new(
+        STRIPE_WEBHOOK_SECRET.encode(),
+        f"{timestamp}.".encode() + body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(digest, signed)
 
 # ------------------------------------------------------------------
 # DYNAMIC WEB SCRAPER & GPT-4o SCRIPT ENGINE
@@ -151,17 +164,15 @@ def generate_dynamic_ai_script(company_name: str, website_url: str = "") -> str:
     Brand Name: {company_name}
     Brand Website Content: {brand_context if brand_context else 'No website text provided.'}
 
-    Task: Write a high-converting 30-second UGC video ad script for {company_name}.
+    Task: Write a spoken 30-second UGC ad for {company_name}.
 
-    Structure:
-    1. HOOK (0-3s): Stop the scroll immediately with a bold claim, hook, or relatable pain point.
-    2. BODY (3-20s): Address the core skin problem, introduce {company_name}'s product, and highlight 2 specific ingredients/benefits.
-    3. CTA (20-30s): Natural, clear push to click the link and try it today.
+    Use only facts that appear in the page text. If an ingredient, result, or review is not in that text, do not invent it. If the page text is empty, talk about the brand by name only.
 
     Constraints:
-    - Conversational, authentic human tone (sounds like a real creator on TikTok/Reels).
-    - Absolutely NO scene directions, camera notes, or brackets like [smiling] or (pause). Return ONLY spoken script text.
-    - Word count: Strict 60 to 75 words total (fits 30s audio speech).
+    - 68 to 78 words. First sentence is a hook a stranger would not skip. Not "hey guys".
+    - Conversational, contractions, one short sentence then a longer one.
+    - No cure claims, no prices, no scene directions, no brackets.
+    - Last line points at the product page. Return only spoken words.
     """
 
     try:
@@ -385,14 +396,13 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         print("[Avatar Director] Skipping HeyGen render: No API Key provided.")
         return
 
-    avatar_id = fetch_random_v3_female_avatar_id()
-    if not avatar_id:
-        print("[Avatar Director] ERROR: Could not resolve a valid live V3 avatar_id from HeyGen.")
+    script_text = generate_dynamic_ai_script(company_name, website_url)
+    candidates = fetch_avatar_candidates()
+    if not candidates:
+        print("[Avatar Director] ERROR: no look id from GET /v3/avatars/looks.")
         return
 
-    script_text = generate_dynamic_ai_script(company_name, website_url)
-
-    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' using live avatar_id: {avatar_id}")
+    print(f"[Avatar Director] Dispatching V3 render for '{company_name}' across {len(candidates)} look(s)")
 
     url = "https://api.heygen.com/v3/videos"
     headers = {
@@ -400,29 +410,38 @@ def trigger_heygen_render(email: str, company_name: str, website_url: str = ""):
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "type": "avatar",
-        "avatar_id": avatar_id,
-        "script": script_text,
-        "voice_id": HEYGEN_VOICE_ID,
-        "aspect_ratio": "9:16"
-    }
+    for avatar_id, voice_id in candidates:
+        payload = {
+            "type": "avatar",
+            "avatar_id": avatar_id,
+            "script": script_text,
+            "voice_id": voice_id,
+            "aspect_ratio": "9:16"
+        }
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=20)
+        except Exception as e:
+            print(f"ERROR:LeadLoop:HeyGen V3 dispatch exception: {e}")
+            return
 
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=15)
         if res.status_code == 200:
             res_data = res.json().get("data", {})
             video_id = res_data.get("video_id") or res_data.get("id")
-
             if video_id:
                 generation_jobs[video_id] = email
-                print(f"INFO:LeadLoop:HeyGen V3 video generation task queued successfully! Video ID: {video_id}")
-            else:
-                print(f"ERROR:LeadLoop:HeyGen V3 render failure response: {res.text}")
-        else:
-            print(f"ERROR:LeadLoop:HeyGen V3 render failure (HTTP {res.status_code}): {res.text}")
-    except Exception as e:
-        print(f"ERROR:LeadLoop:HeyGen V3 dispatch exception: {e}")
+                print(f"INFO:LeadLoop:HeyGen V3 queued. look={avatar_id} video_id={video_id}")
+                return
+            print(f"ERROR:LeadLoop:HeyGen V3 render failure response: {res.text}")
+            return
+
+        if res.status_code == 404 and "avatar_not_found" in res.text:
+            print(f"[Avatar Director] look {avatar_id} not found, trying the next one")
+            continue
+
+        print(f"ERROR:LeadLoop:HeyGen V3 render failure (HTTP {res.status_code}): {res.text}")
+        return
+
+    print("[Avatar Director] every candidate look returned avatar_not_found")
 
 # ------------------------------------------------------------------
 # TIER FULFILLMENT BATCH PROCESSOR
@@ -448,8 +467,11 @@ def process_tier_fulfillment(customer_email: str, company_name: str, website_url
 @app.post("/webhook/stripe")
 @app.post("/webhook-stripe")
 async def stripe_webhook(request: Request, background_tasks: BackgroundTasks):
+    body = await request.body()
+    if not stripe_event_ok(body, request.headers.get("stripe-signature")):
+        raise HTTPException(status_code=400, detail="Invalid Stripe signature")
     try:
-        payload = await request.json()
+        payload = json.loads(body)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
@@ -525,14 +547,18 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 @app.on_event("startup")
 async def startup_event():
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
+    if not ENABLE_OUTREACH:
+        print("[Outreach] Held. Set ENABLE_OUTREACH=true before Agent X or the lead hunter run.")
+        return
+
     run_lead_hunter()
 
     if X_BEARER_TOKEN:
         x_thread = threading.Thread(target=run_agent_x_worker, daemon=True)
         x_thread.start()
-        print("[Agent X] Credentials active. Initializing X worker thread.")
+        print("[Agent X] ENABLE_OUTREACH is on. Worker thread started.")
     else:
-        print("[Agent X] Credentials missing in environment. Worker sleeping.")
+        print("[Agent X] ENABLE_OUTREACH is on, but X_BEARER_TOKEN is missing.")
 
 @app.get("/")
 def health_check():
@@ -540,7 +566,7 @@ def health_check():
         "status": "online",
         "system": "LeadLoop Engine v5.5.0",
         "stored_leads": len(leads_db),
-        "agent_x_active": bool(X_BEARER_TOKEN),
+        "agent_x_active": bool(ENABLE_OUTREACH and X_BEARER_TOKEN),
         "openai_active": bool(OPENAI_API_KEY)
     }
 
