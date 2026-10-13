@@ -182,36 +182,66 @@ class CreativeStore:
             )
             return cursor.lastrowid
 
+    def get_campaign_brief(self, campaign_id):
+        with self._connection() as connection:
+            campaign = connection.execute(
+                """
+                SELECT brand_name, product_name, product_url, goal, target_audience,
+                    offer, hypothesis, primary_metric
+                FROM creative_campaigns WHERE id = ?
+                """,
+                (campaign_id,),
+            ).fetchone()
+        return dict(campaign) if campaign else None
+
     def add_creative(self, campaign_id, data):
-        if not isinstance(data, dict):
-            raise ValueError("Creative must be a JSON object.")
-        concept = self._text(data.get("concept"), "Concept", 200)
-        hook = self._text(data.get("hook"), "Hook", 500)
-        script = self._text(data.get("script"), "Script", 5000)
-        channel = self._text(data.get("channel"), "Channel", 80)
-        duration = self._integer(data.get("duration_seconds"), "Duration", 5, 60)
+        creative_ids = self.add_creatives(campaign_id, [data])
+        return creative_ids[0] if creative_ids else None
+
+    def add_creatives(self, campaign_id, creatives):
+        if not isinstance(creatives, list) or not 1 <= len(creatives) <= 10:
+            raise ValueError("Provide between 1 and 10 creative concepts.")
+        validated = []
+        for data in creatives:
+            if not isinstance(data, dict):
+                raise ValueError("Creative must be a JSON object.")
+            validated.append(
+                (
+                    self._text(data.get("concept"), "Concept", 200),
+                    self._text(data.get("hook"), "Hook", 500),
+                    self._text(data.get("script"), "Script", 5000),
+                    self._text(data.get("channel"), "Channel", 80),
+                    self._integer(data.get("duration_seconds"), "Duration", 5, 60),
+                )
+            )
         now = datetime.now(timezone.utc).isoformat()
+        creative_ids = []
         with self._connection() as connection:
             campaign = connection.execute(
                 "SELECT id FROM creative_campaigns WHERE id = ?", (campaign_id,)
             ).fetchone()
             if not campaign:
-                return None
+                return []
             connection.execute(
                 "UPDATE creative_campaigns SET status = 'planning' "
                 "WHERE id = ? AND status = 'completed'",
                 (campaign_id,),
             )
-            cursor = connection.execute(
-                """
-                INSERT INTO creative_variants (
-                    campaign_id, concept, hook, script, channel,
-                    duration_seconds, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (campaign_id, concept, hook, script, channel, duration, now),
-            )
-            return cursor.lastrowid
+            for concept, hook, script, channel, duration in validated:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO creative_variants (
+                        campaign_id, concept, hook, script, channel,
+                        duration_seconds, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        campaign_id, concept, hook, script, channel,
+                        duration, now,
+                    ),
+                )
+                creative_ids.append(cursor.lastrowid)
+        return creative_ids
 
     def update_creative_status(self, creative_id, status, video_url=""):
         if status not in CREATIVE_STATUSES:

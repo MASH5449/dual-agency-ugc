@@ -35,7 +35,11 @@ remain separate steps.
 
 Open `/creative-lab` to create a campaign brief for a brand and product, record
 the goal, audience, offer, test hypothesis, and primary metric, then save
-multiple ad concepts with a hook, script/outline, channel, and duration.
+multiple ad concepts with a hook, script/outline, channel, and duration. Each
+campaign also has an explicit action to generate 1–10 concept and spoken-script
+drafts from its brief using the configured OpenAI key. The generator uses only
+the supplied brief, avoids inventing product facts or skincare outcomes, and
+saves results as drafts for human review; verify all copy before approval.
 Approved prospects from `/prospects/review` can be selected to prefill the
 brand and product details; campaign plans can also be entered manually.
 
@@ -64,6 +68,7 @@ Configure these Railway variables before using the review page:
 | `PROSPECT_REVIEW_TOKEN` | Required bearer token for importing, listing, and reviewing prospects. If unset, those API actions return 503. |
 | `PROSPECTS_DB_PATH` | SQLite file path; defaults to `data/prospects.sqlite3`. |
 | `CREATIVE_DB_PATH` | Optional database path for creative plans; defaults to `PROSPECTS_DB_PATH`. |
+| `OPENAI_API_KEY` | Required to generate campaign concept and script drafts. |
 
 For data to survive Railway restarts and redeploys, attach a Railway Volume
 mounted at `/data` and set `PROSPECTS_DB_PATH=/data/prospects.sqlite3`. Without
@@ -78,7 +83,7 @@ The same token protects the creative campaign and results APIs.
 | Variable | Role |
 | --- | --- |
 | `HEYGEN_API_KEY` | Renders. Unset = no video is requested. |
-| `OPENAI_API_KEY` | Scripts. Unset = a short fallback line, no invented ingredients. |
+| `OPENAI_API_KEY` | Existing webhook scripts and on-demand Creative Lab concept generation. |
 | `STRIPE_WEBHOOK_SECRET` | When set, `/webhook/stripe` rejects a bad `Stripe-Signature`. Unset = accepted, and a warning is logged. |
 | `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID` | Pause the buyer after payment. |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` | Delivery mail. Default host is `smtp.porkbun.com:587`. |

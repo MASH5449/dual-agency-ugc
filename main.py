@@ -15,8 +15,9 @@ from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from creative_lab import CreativeStore
+from creative_generation import generate_creative_concepts, validate_generation_options
 from prospects import ProspectStore
 
 app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
@@ -667,6 +668,46 @@ async def add_creative_variant(campaign_id: int, request: Request):
     if creative_id is None:
         raise HTTPException(status_code=404, detail="Campaign not found.")
     return {"id": creative_id, "status": "draft"}
+
+
+@app.post("/api/creative/campaigns/{campaign_id}/generate")
+async def generate_campaign_creatives(campaign_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        count, channel, duration = validate_generation_options(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if openai_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Concept generation is unavailable until OPENAI_API_KEY is configured.",
+        )
+    campaign = creative_store.get_campaign_brief(campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    try:
+        drafts = await asyncio.to_thread(
+            generate_creative_concepts,
+            openai_client,
+            campaign,
+            count,
+            channel,
+            duration,
+        )
+        creative_ids = creative_store.add_creatives(campaign_id, drafts)
+    except OpenAIError:
+        print("[Creative Lab] OpenAI concept generation failed.")
+        raise HTTPException(
+            status_code=502,
+            detail="Concept generation failed at the provider. Please try again.",
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not save generated concepts: {error}",
+        )
+    return {"ids": creative_ids, "count": len(creative_ids), "status": "draft"}
 
 
 @app.patch("/api/creative/creatives/{creative_id}")

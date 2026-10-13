@@ -26,7 +26,7 @@
 </head>
 <body>
   <h1>Creative testing lab</h1>
-  <p class="muted">Plan a small batch, approve each concept, record what you produced, then enter results from the ad platform. Nothing here launches ads or generates videos automatically.</p>
+  <p class="muted">Plan a small batch, generate concepts and scripts as drafts, review each one, record what you produced, then enter results from the ad platform. Nothing here launches ads or generates videos.</p>
 
   <section class="panel">
     <label>Review token
@@ -146,6 +146,55 @@
       if (campaign.offer) section.append(element("p", `Offer: ${campaign.offer}`));
       section.append(element("p", `Test idea: ${campaign.hypothesis}`));
       section.append(element("p", `Primary metric: ${campaign.primary_metric}`, "badge"));
+
+      const generationForm = document.createElement("form");
+      generationForm.className = "panel";
+      generationForm.append(element("h3", "Generate draft concepts"));
+      generationForm.append(element(
+        "p",
+        "Uses the campaign brief and OpenAI to draft concepts and spoken scripts. Check every claim and edit before approving."
+      ));
+      const generationOptions = document.createElement("div");
+      generationOptions.className = "grid";
+      const countInput = makeInput("Number of concepts (1–10)", "count", {
+        type: "number", min: 1, max: 10
+      });
+      countInput.querySelector("input").value = "3";
+      generationOptions.append(countInput);
+      const channelInput = makeInput("Channel", "channel", {
+        placeholder: "TikTok, Instagram Reels…"
+      });
+      channelInput.querySelector("input").value = "TikTok";
+      generationOptions.append(channelInput);
+      const durationInput = makeInput("Length in seconds", "duration_seconds", {
+        type: "number", min: 5, max: 60
+      });
+      durationInput.querySelector("input").value = "20";
+      generationOptions.append(durationInput);
+      generationForm.append(generationOptions);
+      const generateButton = element("button", "Generate drafts");
+      generateButton.type = "submit";
+      generationForm.append(generateButton);
+      generationForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        generateButton.disabled = true;
+        generateButton.textContent = "Generating…";
+        try {
+          const data = Object.fromEntries(new FormData(generationForm));
+          data.count = Number(data.count);
+          data.duration_seconds = Number(data.duration_seconds);
+          const result = await api(`/api/creative/campaigns/${campaign.id}/generate`, {
+            method: "POST", headers: jsonHeaders(), body: JSON.stringify(data)
+          });
+          await loadCampaigns();
+          say(`Saved ${result.count} draft concepts. Review and edit them before approving.`, "success");
+        } catch (error) { say(error.message, "error"); }
+        finally {
+          generateButton.disabled = false;
+          generateButton.textContent = "Generate drafts";
+        }
+      });
+      section.append(generationForm);
 
       const addForm = document.createElement("form");
       addForm.className = "panel";
