@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeadLoop Prospect Review</title>
+  <style>
+    :root { color-scheme: light; font: 16px system-ui, sans-serif; }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #18212b; }
+    h1 { margin-bottom: .25rem; }
+    .muted { color: #536273; }
+    .controls, .card { border: 1px solid #ccd5df; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    .controls { display: grid; gap: .75rem; }
+    .card h2 { margin: 0 0 .25rem; font-size: 1.15rem; }
+    .product { padding: .5rem 0; border-top: 1px solid #e3e8ed; }
+    label { display: block; font-weight: 600; }
+    input, textarea, button { font: inherit; padding: .55rem; }
+    input[type="password"], input[type="file"], textarea { display: block; width: min(100%, 42rem); margin-top: .25rem; }
+    button { cursor: pointer; margin: .4rem .4rem 0 0; }
+    .error { color: #a21d1d; white-space: pre-wrap; }
+    .success { color: #176b39; }
+    a { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>Prospect review</h1>
+  <p class="muted">Import an Apify JSON export, check the business and product details, then approve or reject each record. Approval does not send outreach.</p>
+
+  <section class="controls" aria-label="Import and access">
+    <label>Review token
+      <input id="token" type="password" autocomplete="off" placeholder="Configured by the site owner">
+    </label>
+    <label>Apify JSON export
+      <input id="file" type="file" accept=".json,application/json">
+    </label>
+    <div>
+      <button id="import">Import JSON</button>
+      <button id="refresh">Load pending review</button>
+    </div>
+    <div id="message" role="status"></div>
+  </section>
+
+  <main id="prospects"></main>
+  <script>
+    const tokenInput = document.querySelector("#token");
+    const message = document.querySelector("#message");
+    const list = document.querySelector("#prospects");
+    const headers = () => ({ "Authorization": `Bearer ${tokenInput.value}` });
+
+    function setMessage(text, kind = "") {
+      message.className = kind;
+      message.textContent = text;
+    }
+
+    function safeLink(value, label) {
+      try {
+        const url = new URL(value);
+        if (!["http:", "https:"].includes(url.protocol)) return document.createTextNode(label);
+        const link = document.createElement("a");
+        link.href = url.href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = label;
+        return link;
+      } catch {
+        return document.createTextNode(label);
+      }
+    }
+
+    function addText(parent, tag, text, className = "") {
+      const element = document.createElement(tag);
+      element.textContent = text || "";
+      if (className) element.className = className;
+      parent.append(element);
+      return element;
+    }
+
+    function render(prospects) {
+      list.replaceChildren();
+      for (const prospect of prospects) {
+        const card = document.createElement("article");
+        card.className = "card";
+        addText(card, "h2", prospect.company_name);
+        const site = document.createElement("p");
+        site.append(safeLink(prospect.website_url, prospect.domain));
+        card.append(site);
+
+        for (const contact of prospect.contacts || []) {
+          const row = document.createElement("p");
+          row.textContent = `${contact.method || "contact"}: `;
+          if (contact.target && /^https?:\/\//i.test(contact.target)) {
+            row.append(safeLink(contact.target, contact.target));
+          } else {
+            row.append(document.createTextNode(contact.target || ""));
+          }
+          card.append(row);
+        }
+
+        for (const product of prospect.sampleProducts || []) {
+          const row = document.createElement("p");
+          row.className = "product";
+          row.textContent = `${product.title || "Product"}${product.price == null ? "" : ` — ${product.price} ${product.currency || ""}`}: `;
+          if (product.url) row.append(safeLink(product.url, "product page"));
+          card.append(row);
+        }
+
+        if (prospect.review_note) addText(card, "p", `Review note: ${prospect.review_note}`);
+        if (prospect.status === "needs_review") {
+          const note = document.createElement("textarea");
+          note.maxLength = 2000;
+          note.placeholder = "Optional review note";
+          note.setAttribute("aria-label", `Review note for ${prospect.company_name}`);
+          card.append(note);
+          for (const decision of ["approved", "rejected"]) {
+            const button = document.createElement("button");
+            button.textContent = decision === "approved" ? "Approve" : "Reject";
+            button.addEventListener("click", async () => {
+              try {
+                const response = await fetch(`/api/prospects/${prospect.id}`, {
+                  method: "PATCH",
+                  headers: { ...headers(), "Content-Type": "application/json" },
+                  body: JSON.stringify({ status: decision, note: note.value })
+                });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || "Review failed.");
+                setMessage(`${prospect.company_name}: ${decision}.`, "success");
+                await loadPending();
+              } catch (error) {
+                setMessage(error.message, "error");
+              }
+            });
+            card.append(button);
+          }
+        } else {
+          addText(card, "p", `Status: ${prospect.status}`, "muted");
+        }
+        list.append(card);
+      }
+      if (!prospects.length) addText(list, "p", "No prospects in this view.", "muted");
+    }
+
+    async function loadPending() {
+      const response = await fetch("/api/prospects?status=needs_review", { headers: headers() });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Could not load prospects.");
+      render(result.prospects);
+      setMessage(`Loaded ${result.prospects.length} prospect(s) for review.`, "success");
+    }
+
+    document.querySelector("#refresh").addEventListener("click", async () => {
+      try { await loadPending(); }
+      catch (error) { setMessage(error.message, "error"); }
+    });
+
+    document.querySelector("#import").addEventListener("click", async () => {
+      try {
+        const file = document.querySelector("#file").files[0];
+        if (!file) throw new Error("Choose the Apify JSON export first.");
+        const payload = JSON.parse(await file.text());
+        const response = await fetch("/api/prospects/import/apify", {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Import failed.");
+        setMessage(`Imported ${result.inserted}; skipped ${result.duplicates} duplicate(s) and ${result.invalid} invalid record(s).`, "success");
+        await loadPending();
+      } catch (error) {
+        setMessage(error.message, "error");
+      }
+    });
+  </script>
+</body>
+</html>

@@ -6,16 +6,17 @@ import random
 import asyncio
 import smtplib
 import requests
-import threading
 import time
+from pathlib import Path
 from typing import AsyncGenerator
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
+from prospects import ProspectStore
 
 app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
 
@@ -47,8 +48,10 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
-# Outreach (Agent X, lead hunter) stays off until you explicitly turn it on.
-ENABLE_OUTREACH = os.getenv("ENABLE_OUTREACH", "").lower() in ("1", "true", "yes", "on")
+PROSPECTS_DB_PATH = os.getenv("PROSPECTS_DB_PATH", "data/prospects.sqlite3")
+PROSPECT_REVIEW_TOKEN = os.getenv("PROSPECT_REVIEW_TOKEN", "")
+MAX_PROSPECT_IMPORT_BYTES = 5 * 1024 * 1024
+prospect_store = ProspectStore(PROSPECTS_DB_PATH)
 
 HEYGEN_LOOKS_URL = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=10"
 # Used only when a look does not carry its own default_voice_id.
@@ -305,18 +308,6 @@ async def log_event(agent: str, action: str, status: str = "OK"):
     await event_queue.put(json.dumps(event_data))
 
 # ------------------------------------------------------------------
-# LEAD HUNTER WORKER
-# ------------------------------------------------------------------
-def run_lead_hunter():
-    print("[Lead Hunter] Initializing target extraction...")
-    new_pitches = [
-        {"email": "target1@brand.com", "company": "Brand One"},
-        {"email": "target2@brand.com", "company": "Brand Two"}
-    ]
-    leads_db.extend(new_pitches)
-    print(f"[Lead Hunter] Generated {len(new_pitches)} pitches into memory database.")
-
-# ------------------------------------------------------------------
 # REAL-TIME SSE STREAM ROUTE
 # ------------------------------------------------------------------
 @app.get("/api/stream")
@@ -546,19 +537,9 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 # ------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
+    prospect_store.initialize()
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
-    if not ENABLE_OUTREACH:
-        print("[Outreach] Held. Set ENABLE_OUTREACH=true before Agent X or the lead hunter run.")
-        return
-
-    run_lead_hunter()
-
-    if X_BEARER_TOKEN:
-        x_thread = threading.Thread(target=run_agent_x_worker, daemon=True)
-        x_thread.start()
-        print("[Agent X] ENABLE_OUTREACH is on. Worker thread started.")
-    else:
-        print("[Agent X] ENABLE_OUTREACH is on, but X_BEARER_TOKEN is missing.")
+    print("[Outreach] Held. Prospect review is available; automated dispatch is not enabled.")
 
 @app.get("/")
 def health_check():
@@ -566,10 +547,76 @@ def health_check():
         "status": "online",
         "system": "LeadLoop Engine v5.5.0",
         "stored_leads": len(leads_db),
-        "agent_x_active": bool(ENABLE_OUTREACH and X_BEARER_TOKEN),
+        "stored_prospects": prospect_store.count(),
+        "agent_x_active": False,
         "openai_active": bool(OPENAI_API_KEY)
     }
 
 @app.get("/leads")
 def get_leads():
     return {"total": len(leads_db), "leads": leads_db}
+
+
+def require_prospect_review_access(request: Request):
+    if not PROSPECT_REVIEW_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Prospect review is disabled until PROSPECT_REVIEW_TOKEN is configured.",
+        )
+    authorization = request.headers.get("authorization", "")
+    supplied_token = authorization.removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied_token, PROSPECT_REVIEW_TOKEN):
+        raise HTTPException(status_code=401, detail="Invalid prospect review token.")
+
+
+@app.get("/prospects/review", include_in_schema=False)
+def prospect_review_page():
+    return FileResponse(Path(__file__).with_name("prospect_review.html"))
+
+
+@app.post("/api/prospects/import/apify")
+async def import_apify_prospects(request: Request):
+    require_prospect_review_access(request)
+    body = await request.body()
+    if len(body) > MAX_PROSPECT_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="Apify import must be 5 MB or smaller.")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+    try:
+        return prospect_store.import_apify(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@app.get("/api/prospects")
+def list_prospects(request: Request, status: str = "needs_review"):
+    require_prospect_review_access(request)
+    if status not in ("needs_review", "approved", "rejected", "all"):
+        raise HTTPException(status_code=422, detail="Unsupported prospect status.")
+    return {
+        "prospects": prospect_store.list_prospects(
+            status=None if status == "all" else status
+        )
+    }
+
+
+@app.patch("/api/prospects/{prospect_id}")
+async def review_prospect(prospect_id: int, request: Request):
+    require_prospect_review_access(request)
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object.")
+    status = payload.get("status")
+    note = payload.get("note", "")
+    if status not in ("approved", "rejected"):
+        raise HTTPException(status_code=422, detail="Choose approved or rejected.")
+    if not isinstance(note, str) or len(note) > 2000:
+        raise HTTPException(status_code=422, detail="Review notes must be text up to 2,000 characters.")
+    if not prospect_store.review(prospect_id, status, note):
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    return {"id": prospect_id, "status": status}

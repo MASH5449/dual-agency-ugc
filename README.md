@@ -14,7 +14,36 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 4. HeyGen v3 renders a 9:16 avatar video. The look id comes from `GET /v3/avatars/looks`, and the voice is that look's `default_voice_id`.
 5. `POST /webhook/heygen` emails the MP4 when the render finishes.
 
-`GET /` is the health check. `GET /leads` is the in-memory lead list. `GET /api/stream` is the log stream.
+`GET /` is the health check. `GET /leads` is the legacy in-memory list.
+`GET /api/stream` is the log stream.
+
+## Apify prospect review
+
+The deployed app can import the JSON dataset export from the tested Apify
+Shopify Store Leads actor. Open `/prospects/review`, enter the review token,
+choose the downloaded JSON file, then import it. The page displays the company,
+website, published contacts, and sample products so each store can be checked.
+
+Imported records are stored separately in SQLite, deduplicated by website
+domain and Apify record ID, and begin in `needs_review`. Approve or reject each
+record in the review page. **Approval does not send email, add the prospect to
+Instantly, or start video generation.** This first build milestone is only
+source-data intake and human qualification; automated discovery and dispatch
+remain separate steps.
+
+Configure these Railway variables before using the review page:
+
+| Variable | Role |
+| --- | --- |
+| `PROSPECT_REVIEW_TOKEN` | Required bearer token for importing, listing, and reviewing prospects. If unset, those API actions return 503. |
+| `PROSPECTS_DB_PATH` | SQLite file path; defaults to `data/prospects.sqlite3`. |
+
+For data to survive Railway restarts and redeploys, attach a Railway Volume
+mounted at `/data` and set `PROSPECTS_DB_PATH=/data/prospects.sqlite3`. Without
+a persistent volume, the database is local to the container and can be lost.
+The import accepts a JSON list or an object with an `items` list, up to 200
+records and 5 MB per request. It imports published business contact fields as
+source data, not as verified decision-maker addresses or permission to contact.
 
 ## Env
 
@@ -25,8 +54,8 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 | `STRIPE_WEBHOOK_SECRET` | When set, `/webhook/stripe` rejects a bad `Stripe-Signature`. Unset = accepted, and a warning is logged. |
 | `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID` | Pause the buyer after payment. |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` | Delivery mail. Default host is `smtp.porkbun.com:587`. |
-| `ENABLE_OUTREACH` | Off unless `true`. Agent X and the lead hunter do not start on boot. |
-| `X_BEARER_TOKEN` | Only read when outreach is on. |
+| `PROSPECT_REVIEW_TOKEN` | Enables authenticated prospect review and import APIs when set. |
+| `PROSPECTS_DB_PATH` | Prospect SQLite database location. Use a Railway Volume for persistence. |
 
 Secrets stay in the environment. Do not commit a `.env`.
 
