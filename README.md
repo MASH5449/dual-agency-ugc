@@ -31,12 +31,39 @@ Instantly, or start video generation.** This first build milestone is only
 source-data intake and human qualification; automated discovery and dispatch
 remain separate steps.
 
+## Creative testing workflow
+
+Open `/creative-lab` to create a campaign brief for a brand and product, record
+the goal, audience, offer, test hypothesis, and primary metric, then save
+multiple ad concepts with a hook, script/outline, channel, and duration.
+Approved prospects from `/prospects/review` can be selected to prefill the
+brand and product details; campaign plans can also be entered manually.
+
+Each concept follows a deliberate manual path:
+
+`draft → approved → produced → testing → completed`
+
+Draft concepts may instead be rejected. Approval only means approved for
+production; it does not create a video or publish an ad. Marking a concept
+produced requires a video URL, and marking it testing is an explicit record
+that the owner launched it outside this app. Results are entered manually from
+the ad platform by date range. The page calculates CTR, cost per conversion,
+and ROAS from those entered values; they are not independently verified.
+There is no connection here to an advertising account, no automatic campaign
+launch, and no performance guarantee.
+
+The campaign tables use the same SQLite file as prospects by default. If using
+Railway, mount persistent storage at `/data` and configure
+`PROSPECTS_DB_PATH=/data/prospects.sqlite3` (or set `CREATIVE_DB_PATH` to the
+same mounted database file).
+
 Configure these Railway variables before using the review page:
 
 | Variable | Role |
 | --- | --- |
 | `PROSPECT_REVIEW_TOKEN` | Required bearer token for importing, listing, and reviewing prospects. If unset, those API actions return 503. |
 | `PROSPECTS_DB_PATH` | SQLite file path; defaults to `data/prospects.sqlite3`. |
+| `CREATIVE_DB_PATH` | Optional database path for creative plans; defaults to `PROSPECTS_DB_PATH`. |
 
 For data to survive Railway restarts and redeploys, attach a Railway Volume
 mounted at `/data` and set `PROSPECTS_DB_PATH=/data/prospects.sqlite3`. Without
@@ -44,6 +71,7 @@ a persistent volume, the database is local to the container and can be lost.
 The import accepts a JSON list or an object with an `items` list, up to 200
 records and 5 MB per request. It imports published business contact fields as
 source data, not as verified decision-maker addresses or permission to contact.
+The same token protects the creative campaign and results APIs.
 
 ## Env
 

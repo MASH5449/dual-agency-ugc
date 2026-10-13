@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeadLoop Creative Lab</title>
+  <style>
+    :root { color-scheme: light; font: 16px system-ui, sans-serif; }
+    body { max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #18212b; }
+    h1 { margin-bottom: .25rem; }
+    h2 { margin-bottom: .25rem; }
+    .muted { color: #536273; }
+    .panel, .campaign, .variant, .result { border: 1px solid #ccd5df; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    .panel { background: #f7f9fb; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .75rem; }
+    label { display: block; font-weight: 600; }
+    input, textarea, button { font: inherit; padding: .55rem; }
+    input, textarea { display: block; width: 100%; box-sizing: border-box; margin-top: .25rem; }
+    textarea { min-height: 5rem; }
+    button { cursor: pointer; margin: .5rem .5rem 0 0; }
+    .error { color: #a21d1d; white-space: pre-wrap; }
+    .success { color: #176b39; }
+    .badge { display: inline-block; border-radius: 99px; background: #e8edf3; padding: .2rem .65rem; font-size: .85rem; }
+    a { overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>Creative testing lab</h1>
+  <p class="muted">Plan a small batch, approve each concept, record what you produced, then enter results from the ad platform. Nothing here launches ads or generates videos automatically.</p>
+
+  <section class="panel">
+    <label>Review token
+      <input id="token" type="password" autocomplete="off" placeholder="Configured by the site owner">
+    </label>
+    <button id="load">Load campaigns</button>
+    <div id="message" role="status"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Start a test</h2>
+    <p class="muted">Write down the product, audience, goal, and one idea about what you expect to work. This is a plan, not a promise of results.</p>
+    <form id="campaign-form">
+      <div class="grid">
+        <label>Approved prospect (optional)
+          <select id="prospect_id" name="prospect_id">
+            <option value="">Enter brand manually</option>
+          </select>
+        </label>
+        <label>Brand<input name="brand_name" maxlength="160" required></label>
+        <label>Product<input name="product_name" maxlength="160" required></label>
+        <label>Product page URL<input name="product_url" type="url" required></label>
+        <label>Primary metric<input name="primary_metric" maxlength="80" placeholder="For example: cost per purchase" required></label>
+        <label>Campaign goal<input name="goal" maxlength="500" placeholder="What should the ad help achieve?" required></label>
+        <label>Target audience<input name="target_audience" maxlength="500" placeholder="Who is this for?" required></label>
+        <label>Offer (optional)<input name="offer" maxlength="500"></label>
+      </div>
+      <label>Test idea / hypothesis
+        <textarea name="hypothesis" maxlength="1000" placeholder="Example: A routine-focused demonstration may get more product-page visits than a feature list." required></textarea>
+      </label>
+      <button type="submit">Create campaign plan</button>
+    </form>
+  </section>
+
+  <main id="campaigns"></main>
+  <script>
+    const token = document.querySelector("#token");
+    const message = document.querySelector("#message");
+    const campaigns = document.querySelector("#campaigns");
+    const campaignForm = document.querySelector("#campaign-form");
+    const prospectSelect = document.querySelector("#prospect_id");
+    const authHeaders = () => ({ "Authorization": `Bearer ${token.value}` });
+    const jsonHeaders = () => ({ ...authHeaders(), "Content-Type": "application/json" });
+
+    function say(text, kind = "") {
+      message.className = kind;
+      message.textContent = text;
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, options);
+      let body;
+      try { body = await response.json(); }
+      catch { throw new Error("The server returned an unreadable response."); }
+      if (!response.ok) throw new Error(body.detail || "Request failed.");
+      return body;
+    }
+
+    function element(tag, text, className = "") {
+      const node = document.createElement(tag);
+      node.textContent = text || "";
+      if (className) node.className = className;
+      return node;
+    }
+
+    function makeInput(labelText, name, options = {}) {
+      const label = element("label", labelText);
+      const input = options.multiline ? document.createElement("textarea") : document.createElement("input");
+      input.name = name;
+      input.required = options.required !== false;
+      if (options.type) input.type = options.type;
+      if (options.min != null) input.min = options.min;
+      if (options.max != null) input.max = options.max;
+      if (options.placeholder) input.placeholder = options.placeholder;
+      label.append(input);
+      return label;
+    }
+
+    function link(url, text) {
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) return document.createTextNode(text);
+        const anchor = document.createElement("a");
+        anchor.href = parsed.href;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.textContent = text;
+        return anchor;
+      } catch {
+        return document.createTextNode(text);
+      }
+    }
+
+    function addResultCard(parent, result, metricName) {
+      const card = document.createElement("div");
+      card.className = "result";
+      const ctr = result.impressions ? `${(100 * result.clicks / result.impressions).toFixed(2)}%` : "n/a";
+      const cpa = result.conversions ? `$${(result.spend / result.conversions).toFixed(2)}` : "n/a";
+      const roas = result.spend ? `${(result.revenue / result.spend).toFixed(2)}x` : "n/a";
+      card.append(element("strong", `${result.start_date} to ${result.end_date}`));
+      card.append(element("p", `Spend $${Number(result.spend).toFixed(2)} · ${result.impressions} impressions · ${result.clicks} clicks · ${result.conversions} conversions · revenue $${Number(result.revenue).toFixed(2)}`));
+      card.append(element("p", `CTR ${ctr} · CPA ${cpa} · ROAS ${roas} · primary metric: ${metricName}`));
+      if (result.notes) card.append(element("p", `Notes: ${result.notes}`));
+      parent.append(card);
+    }
+
+    function renderCampaign(campaign) {
+      const section = document.createElement("section");
+      section.className = "campaign";
+      section.append(element("h2", `${campaign.brand_name} — ${campaign.product_name}`));
+      const subtitle = document.createElement("p");
+      subtitle.append(link(campaign.product_url, campaign.product_url));
+      subtitle.append(document.createTextNode(` · Status: ${campaign.status}`));
+      section.append(subtitle);
+      section.append(element("p", `Goal: ${campaign.goal}`));
+      section.append(element("p", `Audience: ${campaign.target_audience}`));
+      if (campaign.offer) section.append(element("p", `Offer: ${campaign.offer}`));
+      section.append(element("p", `Test idea: ${campaign.hypothesis}`));
+      section.append(element("p", `Primary metric: ${campaign.primary_metric}`, "badge"));
+
+      const addForm = document.createElement("form");
+      addForm.className = "panel";
+      addForm.append(element("h3", "Add an ad concept"));
+      const fields = document.createElement("div");
+      fields.className = "grid";
+      fields.append(makeInput("Concept name", "concept", { placeholder: "Product demo, founder explanation…" }));
+      fields.append(makeInput("Opening hook", "hook", { placeholder: "First spoken/on-screen line" }));
+      fields.append(makeInput("Channel", "channel", { placeholder: "TikTok, Instagram Reels…" }));
+      fields.append(makeInput("Length in seconds", "duration_seconds", { type: "number", min: 5, max: 60 }));
+      addForm.append(fields);
+      addForm.append(makeInput("Script / creative outline", "script", { multiline: true }));
+      const addButton = element("button", "Save draft concept");
+      addButton.type = "submit";
+      addForm.append(addButton);
+      addForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          const data = Object.fromEntries(new FormData(addForm));
+          data.duration_seconds = Number(data.duration_seconds);
+          await api(`/api/creative/campaigns/${campaign.id}/creatives`, {
+            method: "POST", headers: jsonHeaders(), body: JSON.stringify(data)
+          });
+          say("Draft concept saved.", "success");
+          await loadCampaigns();
+        } catch (error) { say(error.message, "error"); }
+      });
+      section.append(addForm);
+
+      for (const creative of campaign.creatives) {
+        const card = document.createElement("article");
+        card.className = "variant";
+        card.append(element("h3", creative.concept));
+        card.append(element("span", creative.status, "badge"));
+        card.append(element("p", `Channel: ${creative.channel} · ${creative.duration_seconds} seconds`));
+        card.append(element("p", `Hook: ${creative.hook}`));
+        card.append(element("p", `Script / outline: ${creative.script}`));
+        if (creative.video_url) {
+          const video = document.createElement("p");
+          video.append(link(creative.video_url, "Produced video"));
+          card.append(video);
+        }
+
+        const nextActions = {
+          draft: [["approved", "Approve for production"], ["rejected", "Reject"]],
+          approved: [["produced", "Mark produced"]],
+          produced: [["testing", "Mark as testing"]],
+          testing: [["completed", "Complete test"]]
+        };
+        for (const [status, label] of nextActions[creative.status] || []) {
+          const button = element("button", label);
+          button.addEventListener("click", async () => {
+            try {
+              let videoUrl = "";
+              if (status === "produced") {
+                videoUrl = prompt("Paste the finished video URL. This will not publish it.") || "";
+                if (!videoUrl) return;
+              }
+              await api(`/api/creative/creatives/${creative.id}`, {
+                method: "PATCH", headers: jsonHeaders(),
+                body: JSON.stringify({ status, ...(videoUrl ? { video_url: videoUrl } : {}) })
+              });
+              say(`Creative marked ${status}.`, "success");
+              await loadCampaigns();
+            } catch (error) { say(error.message, "error"); }
+          });
+          card.append(button);
+        }
+
+        if (["testing", "completed"].includes(creative.status)) {
+          const resultForm = document.createElement("form");
+          resultForm.className = "panel";
+          resultForm.append(element("h4", "Record results (enter actual ad-platform data)"));
+          const metrics = document.createElement("div");
+          metrics.className = "grid";
+          metrics.append(makeInput("Period start", "start_date", { type: "date" }));
+          metrics.append(makeInput("Period end", "end_date", { type: "date" }));
+          metrics.append(makeInput("Spend", "spend", { type: "number", min: 0, placeholder: "USD" }));
+          metrics.append(makeInput("Impressions", "impressions", { type: "number", min: 0 }));
+          metrics.append(makeInput("Clicks", "clicks", { type: "number", min: 0 }));
+          metrics.append(makeInput("Conversions", "conversions", { type: "number", min: 0 }));
+          metrics.append(makeInput("Revenue", "revenue", { type: "number", min: 0, placeholder: "USD" }));
+          resultForm.append(metrics);
+          resultForm.append(makeInput("Notes", "notes", { multiline: true, required: false }));
+          const save = element("button", "Save results");
+          save.type = "submit";
+          resultForm.append(save);
+          resultForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            try {
+              const data = Object.fromEntries(new FormData(resultForm));
+              for (const field of ["spend", "revenue"]) data[field] = Number(data[field]);
+              for (const field of ["impressions", "clicks", "conversions"]) data[field] = Number(data[field]);
+              await api(`/api/creative/creatives/${creative.id}/results`, {
+                method: "POST", headers: jsonHeaders(), body: JSON.stringify(data)
+              });
+              say("Results saved.", "success");
+              await loadCampaigns();
+            } catch (error) { say(error.message, "error"); }
+          });
+          card.append(resultForm);
+        }
+        for (const result of creative.results) addResultCard(card, result, campaign.primary_metric);
+        section.append(card);
+      }
+      return section;
+    }
+
+    async function loadCampaigns() {
+      const result = await api("/api/creative/campaigns", { headers: authHeaders() });
+      campaigns.replaceChildren();
+      for (const campaign of result.campaigns) campaigns.append(renderCampaign(campaign));
+      if (!result.campaigns.length) campaigns.append(element("p", "No campaign plans yet.", "muted"));
+      await loadApprovedProspects();
+      say(`Loaded ${result.campaigns.length} campaign(s).`, "success");
+    }
+
+    let approvedProspects = [];
+    prospectSelect.addEventListener("change", () => {
+      const prospect = prospectSelect.selectedOptions[0]?.dataset.prospectId;
+      const selected = approvedProspects.find((item) => String(item.id) === prospect);
+      if (!selected) return;
+      const product = selected.sampleProducts[0] || {};
+      campaignForm.elements.brand_name.value = selected.company_name;
+      campaignForm.elements.product_name.value = product.title || "";
+      campaignForm.elements.product_url.value = product.url || selected.website_url;
+    });
+
+    async function loadApprovedProspects() {
+      const result = await api("/api/prospects?status=approved", { headers: authHeaders() });
+      approvedProspects = result.prospects;
+      prospectSelect.replaceChildren(new Option("Enter brand manually", ""));
+      for (const prospect of approvedProspects) {
+        const option = new Option(`${prospect.company_name} (${prospect.domain})`, prospect.id);
+        option.dataset.prospectId = prospect.id;
+        prospectSelect.add(option);
+      }
+    }
+
+    document.querySelector("#load").addEventListener("click", async () => {
+      try { await loadCampaigns(); }
+      catch (error) { say(error.message, "error"); }
+    });
+
+    campaignForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const data = Object.fromEntries(new FormData(event.currentTarget));
+        if (data.prospect_id) data.prospect_id = Number(data.prospect_id);
+        else delete data.prospect_id;
+        await api("/api/creative/campaigns", {
+          method: "POST", headers: jsonHeaders(), body: JSON.stringify(data)
+        });
+        event.currentTarget.reset();
+        say("Campaign plan created.", "success");
+        await loadCampaigns();
+      } catch (error) { say(error.message, "error"); }
+    });
+  </script>
+</body>
+</html>

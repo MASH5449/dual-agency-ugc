@@ -1,0 +1,196 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from creative_lab import CreativeStore
+from prospects import ProspectStore
+
+
+class CreativeStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.temp_dir.name) / "agency.sqlite3")
+        ProspectStore(self.db_path).initialize()
+        self.store = CreativeStore(self.db_path)
+        self.store.initialize()
+        self.campaign_id = self.store.create_campaign(
+            {
+                "brand_name": "Example Skincare",
+                "product_name": "Daily Cleanser",
+                "product_url": "https://example.com/products/cleanser",
+                "goal": "Test product page visits.",
+                "target_audience": "Adults shopping for a gentle daily cleanser.",
+                "offer": "",
+                "hypothesis": "A texture demonstration may attract more qualified visits.",
+                "primary_metric": "cost per product-page visit",
+            }
+        )
+        self.creative_id = self.store.add_creative(
+            self.campaign_id,
+            {
+                "concept": "Texture demo",
+                "hook": "Want to see how it lathers?",
+                "script": "Show the product texture and explain the use directions.",
+                "channel": "Instagram Reels",
+                "duration_seconds": 20,
+            },
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_campaign_brief_and_creative_are_persisted(self):
+        [campaign] = self.store.list_campaigns()
+        self.assertEqual(campaign["brand_name"], "Example Skincare")
+        self.assertEqual(campaign["status"], "planning")
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["status"], "draft")
+        self.assertEqual(creative["hook"], "Want to see how it lathers?")
+        self.assertEqual(creative["results"], [])
+
+    def test_explicit_approval_production_testing_and_manual_results(self):
+        with self.assertRaisesRegex(ValueError, "Cannot move"):
+            self.store.update_creative_status(self.creative_id, "testing")
+        self.assertEqual(
+            self.store.update_creative_status(self.creative_id, "approved"),
+            "approved",
+        )
+        with self.assertRaisesRegex(ValueError, "video URL is required"):
+            self.store.update_creative_status(self.creative_id, "produced")
+        self.store.update_creative_status(
+            self.creative_id,
+            "produced",
+            "https://videos.example.com/texture-demo.mp4",
+        )
+        self.store.update_creative_status(self.creative_id, "testing")
+        result_id = self.store.add_result(
+            self.creative_id,
+            {
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-07",
+                "spend": 25.50,
+                "impressions": 1200,
+                "clicks": 60,
+                "conversions": 4,
+                "revenue": 120,
+                "notes": "Values entered from platform report.",
+            },
+        )
+        self.assertGreater(result_id, 0)
+        [campaign] = self.store.list_campaigns()
+        self.assertEqual(campaign["status"], "testing")
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["results"][0]["clicks"], 60)
+        self.assertEqual(creative["results"][0]["revenue"], 120.0)
+
+    def test_results_are_not_allowed_before_testing_and_duplicate_periods_fail(self):
+        result = {
+            "start_date": "2026-10-01",
+            "end_date": "2026-10-07",
+            "spend": 10,
+            "impressions": 100,
+            "clicks": 5,
+            "conversions": 1,
+            "revenue": 20,
+        }
+        with self.assertRaisesRegex(ValueError, "marked testing"):
+            self.store.add_result(self.creative_id, result)
+        self.store.update_creative_status(self.creative_id, "approved")
+        self.store.update_creative_status(
+            self.creative_id, "produced", "https://example.com/video.mp4"
+        )
+        self.store.update_creative_status(self.creative_id, "testing")
+        self.store.add_result(self.creative_id, result)
+        with self.assertRaisesRegex(ValueError, "already exist"):
+            self.store.add_result(self.creative_id, result)
+
+    def test_validates_campaign_urls_durations_and_nonfinite_money(self):
+        invalid_campaign = {
+            "brand_name": "Brand",
+            "product_name": "Product",
+            "product_url": "javascript:alert(1)",
+            "goal": "Goal",
+            "target_audience": "Audience",
+            "hypothesis": "Hypothesis",
+            "primary_metric": "CTR",
+        }
+        with self.assertRaisesRegex(ValueError, "http or https"):
+            self.store.create_campaign(invalid_campaign)
+        with self.assertRaisesRegex(ValueError, "Duration"):
+            self.store.add_creative(
+                self.campaign_id,
+                {
+                    "concept": "Concept",
+                    "hook": "Hook",
+                    "script": "Script",
+                    "channel": "TikTok",
+                    "duration_seconds": 61,
+                },
+            )
+        with self.assertRaisesRegex(ValueError, "non-negative number"):
+            self.store.add_result(
+                self.creative_id,
+                {
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-01",
+                    "spend": float("nan"),
+                    "impressions": 0,
+                    "clicks": 0,
+                    "conversions": 0,
+                    "revenue": 0,
+                },
+            )
+
+    def test_campaign_can_only_link_to_an_approved_imported_prospect(self):
+        prospects = ProspectStore(self.db_path)
+        prospects.import_apify(
+            [
+                {
+                    "id": "brand-1",
+                    "name": "Example Skincare",
+                    "websiteUrl": "https://example.com",
+                    "sampleProducts": [
+                        {
+                            "title": "Daily Cleanser",
+                            "url": "https://example.com/products/cleanser",
+                        }
+                    ],
+                }
+            ]
+        )
+        with self.assertRaisesRegex(ValueError, "approved prospect"):
+            self.store.create_campaign(
+                {
+                    "prospect_id": 1,
+                    "brand_name": "Example Skincare",
+                    "product_name": "Daily Cleanser",
+                    "product_url": "https://example.com/products/cleanser",
+                    "goal": "Test creative.",
+                    "target_audience": "Skincare shoppers.",
+                    "hypothesis": "A product demo may work.",
+                    "primary_metric": "CTR",
+                }
+            )
+        prospects.review(1, "approved")
+        campaign_id = self.store.create_campaign(
+            {
+                "prospect_id": 1,
+                "brand_name": "Example Skincare",
+                "product_name": "Daily Cleanser",
+                "product_url": "https://example.com/products/cleanser",
+                "goal": "Test creative.",
+                "target_audience": "Skincare shoppers.",
+                "hypothesis": "A product demo may work.",
+                "primary_metric": "CTR",
+            }
+        )
+        campaign = next(
+            item for item in self.store.list_campaigns()
+            if item["id"] == campaign_id
+        )
+        self.assertEqual(campaign["id"], campaign_id)
+        self.assertEqual(campaign["prospect_id"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

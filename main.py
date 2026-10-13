@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from openai import OpenAI
+from creative_lab import CreativeStore
 from prospects import ProspectStore
 
 app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
@@ -52,6 +53,8 @@ PROSPECTS_DB_PATH = os.getenv("PROSPECTS_DB_PATH", "data/prospects.sqlite3")
 PROSPECT_REVIEW_TOKEN = os.getenv("PROSPECT_REVIEW_TOKEN", "")
 MAX_PROSPECT_IMPORT_BYTES = 5 * 1024 * 1024
 prospect_store = ProspectStore(PROSPECTS_DB_PATH)
+creative_store = CreativeStore(os.getenv("CREATIVE_DB_PATH", PROSPECTS_DB_PATH))
+MAX_CREATIVE_REQUEST_BYTES = 32 * 1024
 
 HEYGEN_LOOKS_URL = "https://api.heygen.com/v3/avatars/looks?ownership=public&limit=10"
 # Used only when a look does not carry its own default_voice_id.
@@ -538,6 +541,7 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 @app.on_event("startup")
 async def startup_event():
     prospect_store.initialize()
+    creative_store.initialize()
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
     print("[Outreach] Held. Prospect review is available; automated dispatch is not enabled.")
 
@@ -567,6 +571,19 @@ def require_prospect_review_access(request: Request):
     supplied_token = authorization.removeprefix("Bearer ").strip()
     if not hmac.compare_digest(supplied_token, PROSPECT_REVIEW_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid prospect review token.")
+
+
+async def read_json_body(request: Request, max_bytes=MAX_CREATIVE_REQUEST_BYTES):
+    body = await request.body()
+    if len(body) > max_bytes:
+        raise HTTPException(status_code=413, detail="Request body is too large.")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Expected a JSON object.")
+    return payload
 
 
 @app.get("/prospects/review", include_in_schema=False)
@@ -605,12 +622,7 @@ def list_prospects(request: Request, status: str = "needs_review"):
 @app.patch("/api/prospects/{prospect_id}")
 async def review_prospect(prospect_id: int, request: Request):
     require_prospect_review_access(request)
-    try:
-        payload = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        raise HTTPException(status_code=400, detail="Request body must be valid JSON.")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=422, detail="Expected a JSON object.")
+    payload = await read_json_body(request)
     status = payload.get("status")
     note = payload.get("note", "")
     if status not in ("approved", "rejected"):
@@ -620,3 +632,68 @@ async def review_prospect(prospect_id: int, request: Request):
     if not prospect_store.review(prospect_id, status, note):
         raise HTTPException(status_code=404, detail="Prospect not found.")
     return {"id": prospect_id, "status": status}
+
+
+@app.get("/creative-lab", include_in_schema=False)
+def creative_lab_page():
+    return FileResponse(Path(__file__).with_name("creative_lab.html"))
+
+
+@app.get("/api/creative/campaigns")
+def get_creative_campaigns(request: Request):
+    require_prospect_review_access(request)
+    return {"campaigns": creative_store.list_campaigns()}
+
+
+@app.post("/api/creative/campaigns")
+async def create_creative_campaign(request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        campaign_id = creative_store.create_campaign(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return {"id": campaign_id, "status": "planning"}
+
+
+@app.post("/api/creative/campaigns/{campaign_id}/creatives")
+async def add_creative_variant(campaign_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        creative_id = creative_store.add_creative(campaign_id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if creative_id is None:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    return {"id": creative_id, "status": "draft"}
+
+
+@app.patch("/api/creative/creatives/{creative_id}")
+async def update_creative_variant(creative_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if set(payload) - {"status", "video_url"} or "status" not in payload:
+        raise HTTPException(status_code=422, detail="Provide status and optional video_url only.")
+    try:
+        status = creative_store.update_creative_status(
+            creative_id, payload["status"], payload.get("video_url", "")
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if status == "not_found":
+        raise HTTPException(status_code=404, detail="Creative not found.")
+    return {"id": creative_id, "status": status}
+
+
+@app.post("/api/creative/creatives/{creative_id}/results")
+async def add_creative_results(creative_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        result_id = creative_store.add_result(creative_id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if result_id is None:
+        raise HTTPException(status_code=404, detail="Creative not found.")
+    return {"id": result_id}
