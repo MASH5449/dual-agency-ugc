@@ -348,7 +348,7 @@
         await api("/api/creative/campaigns", {
           method: "POST", headers: jsonHeaders(), body: JSON.stringify(data)
         });
-        event.currentTarget.reset();
+        campaignForm.reset();
         say("Campaign plan created.", "success");
         await loadCampaigns();
       } catch (error) { say(error.message, "error"); }
