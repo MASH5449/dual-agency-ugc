@@ -100,6 +100,7 @@
       if (options.type) input.type = options.type;
       if (options.min != null) input.min = options.min;
       if (options.max != null) input.max = options.max;
+      if (options.maxLength != null) input.maxLength = options.maxLength;
       if (options.placeholder) input.placeholder = options.placeholder;
       label.append(input);
       return label;
@@ -229,9 +230,54 @@
         card.className = "variant";
         card.append(element("h3", creative.concept));
         card.append(element("span", creative.status, "badge"));
-        card.append(element("p", `Channel: ${creative.channel} · ${creative.duration_seconds} seconds`));
-        card.append(element("p", `Hook: ${creative.hook}`));
-        card.append(element("p", `Script / outline: ${creative.script}`));
+        if (creative.status === "draft") {
+          const editForm = document.createElement("form");
+          editForm.className = "panel";
+          const draftFields = document.createElement("div");
+          draftFields.className = "grid";
+          const conceptInput = makeInput("Concept name", "concept", { maxLength: 200 });
+          conceptInput.querySelector("input").value = creative.concept;
+          draftFields.append(conceptInput);
+          const hookInput = makeInput("Opening hook", "hook", { maxLength: 500 });
+          hookInput.querySelector("input").value = creative.hook;
+          draftFields.append(hookInput);
+          const channelField = makeInput("Channel", "channel", { maxLength: 80 });
+          channelField.querySelector("input").value = creative.channel;
+          draftFields.append(channelField);
+          const durationField = makeInput("Length in seconds", "duration_seconds", {
+            type: "number", min: 5, max: 60
+          });
+          durationField.querySelector("input").value = creative.duration_seconds;
+          draftFields.append(durationField);
+          editForm.append(draftFields);
+          const scriptField = makeInput("Script / creative outline", "script", {
+            multiline: true, maxLength: 5000
+          });
+          scriptField.querySelector("textarea").value = creative.script;
+          editForm.append(scriptField);
+          const saveEdit = element("button", "Save draft edits");
+          saveEdit.type = "submit";
+          editForm.append(saveEdit);
+          editForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            saveEdit.disabled = true;
+            try {
+              const data = Object.fromEntries(new FormData(editForm));
+              data.duration_seconds = Number(data.duration_seconds);
+              await api(`/api/creative/creatives/${creative.id}/draft`, {
+                method: "PATCH", headers: jsonHeaders(), body: JSON.stringify(data)
+              });
+              await loadCampaigns();
+              say("Draft edits saved. Review the copy before approving.", "success");
+            } catch (error) { say(error.message, "error"); }
+            finally { saveEdit.disabled = false; }
+          });
+          card.append(editForm);
+        } else {
+          card.append(element("p", `Channel: ${creative.channel} · ${creative.duration_seconds} seconds`));
+          card.append(element("p", `Hook: ${creative.hook}`));
+          card.append(element("p", `Script / outline: ${creative.script}`));
+        }
         if (creative.video_url) {
           const video = document.createElement("p");
           video.append(link(creative.video_url, "Produced video"));

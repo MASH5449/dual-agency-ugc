@@ -48,6 +48,58 @@ class CreativeStoreTests(unittest.TestCase):
         self.assertEqual(creative["hook"], "Want to see how it lathers?")
         self.assertEqual(creative["results"], [])
 
+    def test_draft_can_be_edited_before_approval(self):
+        result = self.store.update_creative_draft(
+            self.creative_id,
+            {
+                "concept": "Powder-to-foam demo",
+                "hook": "Ever tried a cleanser in powder form?",
+                "script": "Show the product and follow its package directions.",
+                "channel": "TikTok",
+                "duration_seconds": 25,
+            },
+        )
+        self.assertEqual(result, "updated")
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["status"], "draft")
+        self.assertEqual(creative["concept"], "Powder-to-foam demo")
+        self.assertEqual(creative["hook"], "Ever tried a cleanser in powder form?")
+        self.assertEqual(creative["channel"], "TikTok")
+        self.assertEqual(creative["duration_seconds"], 25)
+
+    def test_only_drafts_can_be_edited_and_invalid_edits_do_not_apply(self):
+        invalid_data = {
+            "concept": "Changed concept",
+            "hook": "Changed hook",
+            "script": "Changed script",
+            "channel": "TikTok",
+            "duration_seconds": 61,
+        }
+        with self.assertRaisesRegex(ValueError, "Duration"):
+            self.store.update_creative_draft(self.creative_id, invalid_data)
+
+        self.store.update_creative_status(self.creative_id, "approved")
+        with self.assertRaisesRegex(ValueError, "Provide concept"):
+            self.store.update_creative_draft(self.creative_id, {})
+        self.assertEqual(
+            self.store.update_creative_draft(
+                self.creative_id,
+                {
+                    "concept": "Changed concept",
+                    "hook": "Changed hook",
+                    "script": "Changed script",
+                    "channel": "TikTok",
+                    "duration_seconds": 20,
+                },
+            ),
+            "not_draft",
+        )
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["status"], "approved")
+        self.assertEqual(creative["concept"], "Texture demo")
+
     def test_explicit_approval_production_testing_and_manual_results(self):
         with self.assertRaisesRegex(ValueError, "Cannot move"):
             self.store.update_creative_status(self.creative_id, "testing")

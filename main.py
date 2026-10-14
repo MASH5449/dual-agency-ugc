@@ -727,6 +727,24 @@ async def update_creative_variant(creative_id: int, request: Request):
     return {"id": creative_id, "status": status}
 
 
+@app.patch("/api/creative/creatives/{creative_id}/draft")
+async def edit_creative_draft(creative_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        result = creative_store.update_creative_draft(creative_id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Creative not found.")
+    if result == "not_draft":
+        raise HTTPException(
+            status_code=409,
+            detail="Only concepts still in draft status can be edited.",
+        )
+    return {"id": creative_id, "status": "draft"}
+
+
 @app.post("/api/creative/creatives/{creative_id}/results")
 async def add_creative_results(creative_id: int, request: Request):
     require_prospect_review_access(request)

@@ -243,6 +243,39 @@ class CreativeStore:
                 creative_ids.append(cursor.lastrowid)
         return creative_ids
 
+    def update_creative_draft(self, creative_id, data):
+        if not isinstance(data, dict) or set(data) != {
+            "concept", "hook", "script", "channel", "duration_seconds"
+        }:
+            raise ValueError(
+                "Provide concept, hook, script, channel, and duration_seconds."
+            )
+        values = (
+            self._text(data["concept"], "Concept", 200),
+            self._text(data["hook"], "Hook", 500),
+            self._text(data["script"], "Script", 5000),
+            self._text(data["channel"], "Channel", 80),
+            self._integer(data["duration_seconds"], "Duration", 5, 60),
+        )
+        with self._connection() as connection:
+            creative = connection.execute(
+                "SELECT status FROM creative_variants WHERE id = ?", (creative_id,)
+            ).fetchone()
+            if not creative:
+                return "not_found"
+            if creative["status"] != "draft":
+                return "not_draft"
+            cursor = connection.execute(
+                """
+                UPDATE creative_variants
+                SET concept = ?, hook = ?, script = ?, channel = ?,
+                    duration_seconds = ?
+                WHERE id = ? AND status = 'draft'
+                """,
+                (*values, creative_id),
+            )
+            return "updated" if cursor.rowcount else "not_draft"
+
     def update_creative_status(self, creative_id, status, video_url=""):
         if status not in CREATIVE_STATUSES:
             raise ValueError("Unsupported creative status.")

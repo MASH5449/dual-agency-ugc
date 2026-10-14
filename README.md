@@ -47,8 +47,9 @@ Each concept follows a deliberate manual path:
 
 `draft → approved → produced → testing → completed`
 
-Draft concepts may instead be rejected. Approval only means approved for
-production; it does not create a video or publish an ad. Marking a concept
+Draft concepts can be edited in the lab and may instead be rejected. Editing is
+locked after approval. Approval only means approved for production; it does not
+create a video or publish an ad. Marking a concept
 produced requires a video URL, and marking it testing is an explicit record
 that the owner launched it outside this app. Results are entered manually from
 the ad platform by date range. The page calculates CTR, cost per conversion,
