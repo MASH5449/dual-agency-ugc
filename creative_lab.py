@@ -1,4 +1,5 @@
 import re
+import json
 import sqlite3
 import math
 from contextlib import contextmanager
@@ -92,6 +93,28 @@ class CreativeStore:
                     created_at TEXT NOT NULL,
                     UNIQUE (creative_id, start_date, end_date),
                     CHECK (end_date >= start_date)
+                );
+
+                CREATE TABLE IF NOT EXISTS creative_handoffs (
+                    creative_id INTEGER PRIMARY KEY REFERENCES creative_variants(id)
+                        ON DELETE CASCADE,
+                    handoff_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS creative_video_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    creative_id INTEGER NOT NULL REFERENCES creative_variants(id)
+                        ON DELETE CASCADE,
+                    provider_video_id TEXT UNIQUE,
+                    status TEXT NOT NULL CHECK (status IN (
+                        'submitting', 'queued', 'submission_unknown',
+                        'ready_for_review', 'failed', 'approved', 'rejected'
+                    )),
+                    video_url TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -276,6 +299,196 @@ class CreativeStore:
             )
             return "updated" if cursor.rowcount else "not_draft"
 
+    def get_approved_creative(self, creative_id):
+        with self._connection() as connection:
+            creative = connection.execute(
+                """
+                SELECT creative_variants.*, creative_campaigns.brand_name,
+                    creative_campaigns.product_name, creative_campaigns.product_url
+                FROM creative_variants
+                JOIN creative_campaigns ON creative_campaigns.id = creative_variants.campaign_id
+                WHERE creative_variants.id = ? AND creative_variants.status = 'approved'
+                """,
+                (creative_id,),
+            ).fetchone()
+        return dict(creative) if creative else None
+
+    def get_creative_status(self, creative_id):
+        with self._connection() as connection:
+            creative = connection.execute(
+                "SELECT status FROM creative_variants WHERE id = ?", (creative_id,)
+            ).fetchone()
+        return creative["status"] if creative else None
+
+    def has_production_handoff(self, creative_id):
+        with self._connection() as connection:
+            return connection.execute(
+                "SELECT 1 FROM creative_handoffs WHERE creative_id = ?",
+                (creative_id,),
+            ).fetchone() is not None
+
+    def save_production_handoff(self, creative_id, handoff):
+        if not isinstance(handoff, dict):
+            raise ValueError("Production handoff must be an object.")
+        with self._connection() as connection:
+            creative = connection.execute(
+                "SELECT status FROM creative_variants WHERE id = ?", (creative_id,)
+            ).fetchone()
+            if not creative:
+                return "not_found"
+            if creative["status"] != "approved":
+                return "not_approved"
+            existing = connection.execute(
+                "SELECT 1 FROM creative_handoffs WHERE creative_id = ?",
+                (creative_id,),
+            ).fetchone()
+            if existing:
+                return "exists"
+            connection.execute(
+                """
+                INSERT INTO creative_handoffs (creative_id, handoff_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    creative_id,
+                    json.dumps(handoff, ensure_ascii=True),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        return "saved"
+
+    def reserve_video_render(self, creative_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as connection:
+            creative = connection.execute(
+                "SELECT status FROM creative_variants WHERE id = ?", (creative_id,)
+            ).fetchone()
+            if not creative:
+                return None, "not_found"
+            if creative["status"] != "approved":
+                return None, "not_approved"
+            previous = connection.execute(
+                """
+                SELECT status FROM creative_video_jobs
+                WHERE creative_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (creative_id,),
+            ).fetchone()
+            if previous and previous["status"] not in ("failed", "rejected"):
+                return None, "already_active"
+            cursor = connection.execute(
+                """
+                INSERT INTO creative_video_jobs (
+                    creative_id, status, created_at, updated_at
+                ) VALUES (?, 'submitting', ?, ?)
+                """,
+                (creative_id, now, now),
+            )
+            return cursor.lastrowid, "reserved"
+
+    def set_video_render_submission(self, job_id, submission):
+        if not isinstance(submission, dict):
+            raise ValueError("Render submission must be an object.")
+        status = submission.get("status")
+        if status not in ("queued", "failed", "submission_unknown"):
+            raise ValueError("Unsupported render submission status.")
+        video_id = submission.get("video_id", "")
+        error = self._text(
+            submission.get("detail", ""), "Render status detail", 500, required=False
+        )
+        if status == "queued":
+            video_id = self._text(video_id, "HeyGen video ID", 200)
+        else:
+            video_id = ""
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE creative_video_jobs
+                SET provider_video_id = ?, status = ?, error_message = ?, updated_at = ?
+                WHERE id = ? AND status = 'submitting'
+                """,
+                (
+                    video_id or None,
+                    status,
+                    error,
+                    datetime.now(timezone.utc).isoformat(),
+                    job_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def finish_video_render(self, provider_video_id, video_url, failed=False):
+        if not isinstance(provider_video_id, str) or not provider_video_id.strip():
+            return False
+        if failed:
+            next_status = "failed"
+            validated_url = ""
+        else:
+            validated_url = self._http_url(video_url, "Video URL")
+            next_status = "ready_for_review"
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE creative_video_jobs
+                SET status = ?, video_url = ?, error_message = '', updated_at = ?
+                WHERE provider_video_id = ?
+                    AND status IN ('submitting', 'queued', 'submission_unknown')
+                """,
+                (
+                    next_status,
+                    validated_url,
+                    datetime.now(timezone.utc).isoformat(),
+                    provider_video_id.strip(),
+                ),
+            )
+            return cursor.rowcount == 1
+
+    def review_video_render(self, job_id, decision):
+        if decision not in ("approved", "rejected"):
+            raise ValueError("Choose approved or rejected for the finished video.")
+        with self._connection() as connection:
+            job = connection.execute(
+                "SELECT creative_id, video_url, status FROM creative_video_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if not job:
+                return "not_found"
+            if job["status"] != "ready_for_review":
+                return "not_ready"
+            if decision == "approved":
+                creative = connection.execute(
+                    "SELECT status FROM creative_variants WHERE id = ?",
+                    (job["creative_id"],),
+                ).fetchone()
+                if not creative or creative["status"] != "approved":
+                    return "creative_not_approved"
+                connection.execute(
+                    "UPDATE creative_variants SET status = 'produced', video_url = ? "
+                    "WHERE id = ? AND status = 'approved'",
+                    (job["video_url"], job["creative_id"]),
+                )
+            connection.execute(
+                "UPDATE creative_video_jobs SET status = ?, updated_at = ? WHERE id = ?",
+                (
+                    decision,
+                    datetime.now(timezone.utc).isoformat(),
+                    job_id,
+                ),
+            )
+            return decision
+
+    def get_video_job_status(self, job_id):
+        with self._connection() as connection:
+            job = connection.execute(
+                """
+                SELECT id, creative_id, provider_video_id, status, video_url,
+                    error_message, created_at, updated_at
+                FROM creative_video_jobs WHERE id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        return dict(job) if job else None
+
     def update_creative_status(self, creative_id, status, video_url=""):
         if status not in CREATIVE_STATUSES:
             raise ValueError("Unsupported creative status.")
@@ -378,6 +591,28 @@ class CreativeStore:
                 campaign_data["creatives"] = []
                 for creative in creatives:
                     creative_data = dict(creative)
+                    handoff = connection.execute(
+                        "SELECT handoff_json, created_at FROM creative_handoffs "
+                        "WHERE creative_id = ?",
+                        (creative["id"],),
+                    ).fetchone()
+                    creative_data["production_handoff"] = (
+                        {
+                            **json.loads(handoff["handoff_json"]),
+                            "created_at": handoff["created_at"],
+                        }
+                        if handoff
+                        else None
+                    )
+                    creative_data["video_jobs"] = [
+                        dict(job)
+                        for job in connection.execute(
+                            "SELECT id, provider_video_id, status, video_url, "
+                            "error_message, created_at, updated_at "
+                            "FROM creative_video_jobs WHERE creative_id = ? ORDER BY id",
+                            (creative["id"],),
+                        ).fetchall()
+                    ]
                     results = connection.execute(
                         "SELECT * FROM creative_results WHERE creative_id = ? ORDER BY start_date",
                         (creative["id"],),

@@ -26,7 +26,7 @@
 </head>
 <body>
   <h1>Creative testing lab</h1>
-  <p class="muted">Plan a small batch, generate concepts and scripts as drafts, review each one, record what you produced, then enter results from the ad platform. Nothing here launches ads or generates videos.</p>
+  <p class="muted">Plan a small batch, generate concepts and scripts as drafts, review each one, prepare production notes, record what you produced, then enter results from the ad platform. Nothing here launches ads or generates videos.</p>
 
   <section class="panel">
     <label>Review token
@@ -132,6 +132,85 @@
       card.append(element("p", `CTR ${ctr} · CPA ${cpa} · ROAS ${roas} · primary metric: ${metricName}`));
       if (result.notes) card.append(element("p", `Notes: ${result.notes}`));
       parent.append(card);
+    }
+
+    function addProductionHandoff(parent, handoff) {
+      const panel = document.createElement("section");
+      panel.className = "panel";
+      panel.append(element("h4", "Production handoff"));
+      panel.append(element(
+        "p",
+        "AI-generated shoot guide. It does not create a video or contact a video-rendering service."
+        "muted"
+      ));
+      let startSecond = 0;
+      for (const [index, shot] of handoff.shots.entries()) {
+        const shotCard = document.createElement("div");
+        shotCard.className = "result";
+        const endSecond = startSecond + shot.seconds;
+        shotCard.append(element(
+          "strong",
+          `Shot ${index + 1} · ${startSecond}s–${endSecond}s (${shot.seconds}s)`
+        ));
+        startSecond = endSecond;
+        shotCard.append(element("p", `Visual: ${shot.visual}`));
+        shotCard.append(element("p", `Approved script: ${shot.voiceover}`));
+        if (shot.on_screen_text) {
+          shotCard.append(element("p", `On-screen text: ${shot.on_screen_text}`));
+        }
+        panel.append(shotCard);
+      }
+      panel.append(element("h4", "Producer checklist"));
+      const checklist = document.createElement("ul");
+      for (const item of handoff.checklist) checklist.append(element("li", item));
+      panel.append(checklist);
+      parent.append(panel);
+    }
+
+    function addVideoJob(parent, job) {
+      const panel = document.createElement("section");
+      panel.className = "panel";
+      panel.append(element("h4", `Video render · ${job.status.replaceAll("_", " ")}`));
+      if (job.provider_video_id) {
+        panel.append(element("p", `HeyGen job ID: ${job.provider_video_id}`, "muted"));
+      }
+      if (job.status === "queued" || job.status === "submitting") {
+        panel.append(element("p", "One video was submitted to HeyGen. Refresh campaigns after it finishes.", "muted"));
+      } else if (job.status === "submission_unknown") {
+        panel.append(element(
+          "p",
+          `${job.error_message} Do not submit another render until you have checked HeyGen.`,
+          "error"
+        ));
+      } else if (job.status === "failed") {
+        panel.append(element("p", job.error_message || "HeyGen did not accept this render.", "error"));
+      } else if (job.status === "ready_for_review") {
+        panel.append(element("p", "Review the finished video before approving it for production.", "muted"));
+        panel.append(link(job.video_url, "Open finished video"));
+        for (const [decision, label] of [["approved", "Approve video"], ["rejected", "Reject video"]]) {
+          const button = element("button", label);
+          button.addEventListener("click", async () => {
+            if (decision === "approved" && !confirm("Approve this finished video and mark the concept produced?")) return;
+            button.disabled = true;
+            try {
+              await api(`/api/creative/video-jobs/${job.id}`, {
+                method: "PATCH",
+                headers: jsonHeaders(),
+                body: JSON.stringify({ decision })
+              });
+              await loadCampaigns();
+              say(decision === "approved" ? "Video approved and marked produced." : "Video rejected. You may request another render.", "success");
+            } catch (error) { say(error.message, "error"); }
+            finally { button.disabled = false; }
+          });
+          panel.append(button);
+        }
+      } else if (job.status === "approved") {
+        panel.append(element("p", "You approved this video for production.", "success"));
+      } else if (job.status === "rejected") {
+        panel.append(element("p", "You rejected this render. You can request another one.", "muted"));
+      }
+      parent.append(panel);
     }
 
     function renderCampaign(campaign) {
@@ -278,6 +357,67 @@
           card.append(element("p", `Hook: ${creative.hook}`));
           card.append(element("p", `Script / outline: ${creative.script}`));
         }
+        if (creative.production_handoff) {
+          addProductionHandoff(card, creative.production_handoff);
+        } else if (creative.status === "approved") {
+          const handoffButton = element("button", "Prepare production handoff");
+          handoffButton.title = "Uses OpenAI to prepare a handoff; this makes a small API request, but does not render a video.";
+          handoffButton.addEventListener("click", async () => {
+            handoffButton.disabled = true;
+            handoffButton.textContent = "Preparing…";
+            try {
+              await api(`/api/creative/creatives/${creative.id}/production-handoff`, {
+                method: "POST", headers: jsonHeaders(), body: JSON.stringify({})
+              });
+              await loadCampaigns();
+              say("Production handoff saved. Review the checklist before filming.", "success");
+            } catch (error) { say(error.message, "error"); }
+            finally {
+              handoffButton.disabled = false;
+              handoffButton.textContent = "Prepare production handoff";
+            }
+          });
+          card.append(handoffButton);
+        }
+        const videoJobs = creative.video_jobs || [];
+        for (const job of videoJobs) addVideoJob(card, job);
+        const latestVideoJob = videoJobs[videoJobs.length - 1];
+        if (
+          creative.status === "approved"
+          && (!latestVideoJob || ["failed", "rejected"].includes(latestVideoJob.status))
+        ) {
+          const renderButton = element(
+            "button",
+            latestVideoJob ? "Generate another video (may incur charges)" : "Generate one video (may incur charges)"
+          );
+          renderButton.addEventListener("click", async () => {
+            if (!confirm(
+              "Submit exactly one video render to HeyGen? This may incur a HeyGen charge. The initial version uses the selected HeyGen look's default voice; it does not use ElevenLabs yet."
+            )) return;
+            const originalLabel = renderButton.textContent;
+            renderButton.disabled = true;
+            renderButton.textContent = "Submitting to HeyGen…";
+            try {
+              const result = await api(`/api/creative/creatives/${creative.id}/render`, {
+                method: "POST", headers: jsonHeaders(), body: JSON.stringify({})
+              });
+              await loadCampaigns();
+              say(`One video submitted to HeyGen (job ${result.provider_video_id}). Review it when it finishes.`, "success");
+            } catch (error) {
+              try {
+                await loadCampaigns();
+                say(error.message, "error");
+              } catch (loadError) {
+                say(`${error.message} Could not refresh render status: ${loadError.message}`, "error");
+              }
+            }
+            finally {
+              renderButton.disabled = false;
+              renderButton.textContent = originalLabel;
+            }
+          });
+          card.append(renderButton);
+        }
         if (creative.video_url) {
           const video = document.createElement("p");
           video.append(link(creative.video_url, "Produced video"));
@@ -286,7 +426,7 @@
 
         const nextActions = {
           draft: [["approved", "Approve for production"], ["rejected", "Reject"]],
-          approved: [["produced", "Mark produced"]],
+          approved: [],
           produced: [["testing", "Mark as testing"]],
           testing: [["completed", "Complete test"]]
         };

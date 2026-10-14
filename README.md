@@ -49,13 +49,29 @@ Each concept follows a deliberate manual path:
 
 Draft concepts can be edited in the lab and may instead be rejected. Editing is
 locked after approval. Approval only means approved for production; it does not
-create a video or publish an ad. Marking a concept
-produced requires a video URL, and marking it testing is an explicit record
-that the owner launched it outside this app. Results are entered manually from
-the ad platform by date range. The page calculates CTR, cost per conversion,
-and ROAS from those entered values; they are not independently verified.
-There is no connection here to an advertising account, no automatic campaign
-launch, and no performance guarantee.
+automatically create a video or publish an ad. For an approved concept, the
+owner can explicitly request one HeyGen render at a time. The app uses one
+available HeyGen avatar look and its default voice; the current Creative Lab
+render path does not yet call ElevenLabs. Renders may incur HeyGen charges.
+Connection failures that leave submission uncertain block automatic retry so
+the owner can check HeyGen first. The configured HeyGen webhook should point to
+`https://<your-app-domain>/webhook/heygen`; completed videos appear for review.
+The owner must approve or reject each finished video. Approval attaches it to
+the concept as produced; rejection allows a deliberate new render request.
+Rendering does not send email or publish ads. Marking a concept testing is an
+explicit record that the owner launched it outside this app. Results are
+entered manually from the ad platform by date range. The page calculates CTR,
+cost per conversion, and ROAS from those entered values; they are not
+independently verified. There is no connection here to an advertising account,
+no automatic campaign launch, and no performance guarantee.
+
+An approved concept can be turned into one saved production handoff using
+OpenAI's lower-cost `gpt-4o-mini` model with a 1,500-token output cap. It
+segments the approved script into timed shots and includes practical visual
+directions and a producer checklist; server validation requires the spoken
+copy to reproduce the approved script exactly. The request is made only when
+the owner clicks the handoff button. It does not request a video render or
+publish anything. OpenAI usage may incur a small variable API charge.
 
 The campaign tables use the same SQLite file as prospects by default. If using
 Railway, mount persistent storage at `/data` and configure
@@ -70,6 +86,7 @@ Configure these Railway variables before using the review page:
 | `PROSPECTS_DB_PATH` | SQLite file path; defaults to `data/prospects.sqlite3`. |
 | `CREATIVE_DB_PATH` | Optional database path for creative plans; defaults to `PROSPECTS_DB_PATH`. |
 | `OPENAI_API_KEY` | Required to generate campaign concept and script drafts. |
+| `HEYGEN_API_KEY` | Required for explicit one-at-a-time Creative Lab video renders. |
 
 For data to survive Railway restarts and redeploys, attach a Railway Volume
 mounted at `/data` and set `PROSPECTS_DB_PATH=/data/prospects.sqlite3`. Without
@@ -83,7 +100,7 @@ The same token protects the creative campaign and results APIs.
 
 | Variable | Role |
 | --- | --- |
-| `HEYGEN_API_KEY` | Renders. Unset = no video is requested. |
+| `HEYGEN_API_KEY` | Legacy fulfillment renders and explicit Creative Lab renders. |
 | `OPENAI_API_KEY` | Existing webhook scripts and on-demand Creative Lab concept generation. |
 | `STRIPE_WEBHOOK_SECRET` | When set, `/webhook/stripe` rejects a bad `Stripe-Signature`. Unset = accepted, and a warning is logged. |
 | `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID` | Pause the buyer after payment. |

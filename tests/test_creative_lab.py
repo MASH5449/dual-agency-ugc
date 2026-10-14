@@ -100,6 +100,127 @@ class CreativeStoreTests(unittest.TestCase):
         self.assertEqual(creative["status"], "approved")
         self.assertEqual(creative["concept"], "Texture demo")
 
+    def test_production_handoff_is_persisted_only_for_approved_creative(self):
+        handoff = {
+            "shots": [
+                {
+                    "seconds": 10,
+                    "visual": "Open on the presenter.",
+                    "voiceover": "Want to see how it lathers?",
+                    "on_screen_text": "",
+                }
+            ],
+            "checklist": ["Check directions."],
+        }
+        self.assertEqual(
+            self.store.save_production_handoff(self.creative_id, handoff),
+            "not_approved",
+        )
+        self.store.update_creative_status(self.creative_id, "approved")
+        self.assertEqual(self.store.get_creative_status(self.creative_id), "approved")
+        self.assertFalse(self.store.has_production_handoff(self.creative_id))
+        self.assertEqual(
+            self.store.save_production_handoff(self.creative_id, handoff),
+            "saved",
+        )
+        self.assertTrue(self.store.has_production_handoff(self.creative_id))
+        self.assertEqual(
+            self.store.save_production_handoff(self.creative_id, handoff),
+            "exists",
+        )
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["production_handoff"]["shots"], handoff["shots"])
+        self.assertEqual(
+            self.store.update_creative_status(
+                self.creative_id,
+                "produced",
+                "https://videos.example.com/texture-demo.mp4",
+            ),
+            "produced",
+        )
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["production_handoff"]["checklist"], ["Check directions."])
+
+    def test_video_render_is_single_active_job_and_requires_human_review(self):
+        self.assertEqual(
+            self.store.reserve_video_render(self.creative_id),
+            (None, "not_approved"),
+        )
+        self.store.update_creative_status(self.creative_id, "approved")
+        job_id, status = self.store.reserve_video_render(self.creative_id)
+        self.assertEqual(status, "reserved")
+        self.assertEqual(
+            self.store.reserve_video_render(self.creative_id),
+            (None, "already_active"),
+        )
+        self.assertTrue(
+            self.store.set_video_render_submission(
+                job_id,
+                {"status": "queued", "video_id": "heygen-job-1", "detail": ""},
+            )
+        )
+        self.assertTrue(
+            self.store.finish_video_render(
+                "heygen-job-1", "https://cdn.heygen.ai/video-1.mp4"
+            )
+        )
+        self.assertFalse(
+            self.store.finish_video_render(
+                "heygen-job-1", "https://cdn.heygen.ai/video-1.mp4"
+            )
+        )
+        self.assertEqual(self.store.get_creative_status(self.creative_id), "approved")
+        self.assertEqual(
+            self.store.review_video_render(job_id, "rejected"),
+            "rejected",
+        )
+
+        retry_job_id, status = self.store.reserve_video_render(self.creative_id)
+        self.assertEqual(status, "reserved")
+        self.store.set_video_render_submission(
+            retry_job_id,
+            {"status": "queued", "video_id": "heygen-job-2", "detail": ""},
+        )
+        self.store.finish_video_render(
+            "heygen-job-2", "https://cdn.heygen.ai/video-2.mp4"
+        )
+        self.assertEqual(
+            self.store.review_video_render(retry_job_id, "approved"),
+            "approved",
+        )
+        self.assertEqual(self.store.get_creative_status(self.creative_id), "produced")
+        self.assertEqual(
+            self.store.reserve_video_render(self.creative_id),
+            (None, "not_approved"),
+        )
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["video_url"], "https://cdn.heygen.ai/video-2.mp4")
+        self.assertEqual(
+            [job["status"] for job in creative["video_jobs"]],
+            ["rejected", "approved"],
+        )
+
+    def test_uncertain_video_submission_cannot_be_retried_automatically(self):
+        self.store.update_creative_status(self.creative_id, "approved")
+        job_id, _ = self.store.reserve_video_render(self.creative_id)
+        self.store.set_video_render_submission(
+            job_id,
+            {
+                "status": "submission_unknown",
+                "detail": "Check HeyGen before retrying.",
+            },
+        )
+        self.assertEqual(
+            self.store.reserve_video_render(self.creative_id),
+            (None, "already_active"),
+        )
+        [campaign] = self.store.list_campaigns()
+        [creative] = campaign["creatives"]
+        self.assertEqual(creative["video_jobs"][0]["status"], "submission_unknown")
+
     def test_explicit_approval_production_testing_and_manual_results(self):
         with self.assertRaisesRegex(ValueError, "Cannot move"):
             self.store.update_creative_status(self.creative_id, "testing")

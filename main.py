@@ -18,6 +18,8 @@ from bs4 import BeautifulSoup
 from openai import OpenAI, OpenAIError
 from creative_lab import CreativeStore
 from creative_generation import generate_creative_concepts, validate_generation_options
+from creative_handoff import generate_production_handoff
+from creative_video import submit_heygen_video
 from prospects import ProspectStore
 
 app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
@@ -520,19 +522,37 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "invalid_payload"}
 
     event_type = payload.get("event_type") or payload.get("type")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    video_id = data.get("video_id") or data.get("id") or payload.get("video_id")
 
     if event_type in ["avatar_video.success", "complete", "completed"]:
-        video_url = payload.get("data", {}).get("url") or payload.get("url") or payload.get("data", {}).get("video_url")
-        video_id = payload.get("data", {}).get("video_id") or payload.get("data", {}).get("id")
+        video_url = data.get("url") or payload.get("url") or data.get("video_url")
+        if video_id and video_url:
+            try:
+                creative_job_updated = creative_store.finish_video_render(
+                    str(video_id), video_url
+                )
+            except ValueError:
+                print("[Creative Lab] HeyGen webhook contained an invalid video URL.")
+                creative_job_updated = False
+            if creative_job_updated:
+                await log_event(
+                    "Creative Lab",
+                    "HeyGen render completed and is waiting for owner review.",
+                    "SUCCESS",
+                )
+                return {"status": "creative_video_ready_for_review"}
 
-        recipient_email = generation_jobs.get(video_id, "customer@example.com")
-
-        if video_url:
+        recipient_email = generation_jobs.get(video_id)
+        if video_url and recipient_email:
             print(f"INFO:LeadLoop:HeyGen Render Completed. Video URL: {video_url}")
             await log_event("Fulfillment Agent", f"HeyGen Render Completed. Video MP4 generated.", "SUCCESS")
 
             background_tasks.add_task(send_fulfillment_email, recipient_email, video_url)
             await log_event("Fulfillment Agent", f"Delivered video MP4 to {recipient_email}")
+    elif event_type in ["avatar_video.fail", "avatar_video.failed", "failed", "failure"]:
+        if video_id:
+            creative_store.finish_video_render(str(video_id), "", failed=True)
 
     return {"status": "success"}
 
@@ -743,6 +763,160 @@ async def edit_creative_draft(creative_id: int, request: Request):
             detail="Only concepts still in draft status can be edited.",
         )
     return {"id": creative_id, "status": "draft"}
+
+
+@app.post("/api/creative/creatives/{creative_id}/production-handoff")
+async def create_production_handoff(creative_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload:
+        raise HTTPException(status_code=422, detail="This action does not accept a request body.")
+    if openai_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Production handoff generation is unavailable until OPENAI_API_KEY is configured.",
+        )
+    creative = creative_store.get_approved_creative(creative_id)
+    if creative is None:
+        if creative_store.get_creative_status(creative_id) is None:
+            raise HTTPException(status_code=404, detail="Creative not found.")
+        raise HTTPException(
+            status_code=409,
+            detail="Only approved concepts can be turned into a production handoff.",
+        )
+    if creative_store.has_production_handoff(creative_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A production handoff already exists for this concept.",
+        )
+    try:
+        handoff = await asyncio.to_thread(
+            generate_production_handoff,
+            openai_client,
+            creative,
+        )
+        result = creative_store.save_production_handoff(creative_id, handoff)
+    except OpenAIError:
+        print("[Creative Lab] OpenAI production handoff generation failed.")
+        raise HTTPException(
+            status_code=502,
+            detail="Production handoff generation failed at the provider. Please try again.",
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not create a valid production handoff: {error}",
+        )
+    if result == "not_approved":
+        raise HTTPException(
+            status_code=409,
+            detail="The concept must still be approved to save its production handoff.",
+        )
+    if result == "exists":
+        raise HTTPException(
+            status_code=409,
+            detail="A production handoff already exists for this concept.",
+        )
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Creative not found.")
+    return {"id": creative_id, "status": "saved", "production_handoff": handoff}
+
+
+@app.post("/api/creative/creatives/{creative_id}/render")
+async def render_approved_creative(creative_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload:
+        raise HTTPException(status_code=422, detail="This action does not accept a request body.")
+    if not HEYGEN_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Video generation is unavailable until HEYGEN_API_KEY is configured.",
+        )
+    creative = creative_store.get_approved_creative(creative_id)
+    if creative is None:
+        if creative_store.get_creative_status(creative_id) is None:
+            raise HTTPException(status_code=404, detail="Creative not found.")
+        raise HTTPException(
+            status_code=409,
+            detail="Approve the script before requesting a video render.",
+        )
+    candidates = await asyncio.to_thread(fetch_avatar_candidates)
+    if not candidates:
+        raise HTTPException(
+            status_code=502,
+            detail="HeyGen did not return an available avatar look. No render was requested.",
+        )
+    job_id, reservation_status = creative_store.reserve_video_render(creative_id)
+    if reservation_status == "not_found":
+        raise HTTPException(status_code=404, detail="Creative not found.")
+    if reservation_status == "not_approved":
+        raise HTTPException(status_code=409, detail="Approve the script before requesting a video render.")
+    if reservation_status == "already_active":
+        raise HTTPException(
+            status_code=409,
+            detail="A render is already active or awaiting review. Check its status before requesting another.",
+        )
+    avatar_id, voice_id = candidates[0]
+    try:
+        submission = await asyncio.to_thread(
+            submit_heygen_video,
+            creative["script"],
+            avatar_id,
+            voice_id,
+            HEYGEN_API_KEY,
+            requests.post,
+        )
+    except requests.RequestException:
+        creative_store.set_video_render_submission(
+            job_id,
+            {
+                "status": "submission_unknown",
+                "detail": (
+                    "The connection to HeyGen ended before confirmation. Check "
+                    "your HeyGen account before retrying to avoid duplicate charges."
+                ),
+            },
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "HeyGen submission status is unknown. Check your HeyGen account "
+                "before retrying to avoid a duplicate render."
+            ),
+        )
+    creative_store.set_video_render_submission(job_id, submission)
+    job = creative_store.get_video_job_status(job_id)
+    if submission["status"] == "failed":
+        raise HTTPException(status_code=502, detail=submission["detail"])
+    if submission["status"] == "submission_unknown":
+        raise HTTPException(status_code=502, detail=submission["detail"])
+    return {
+        "id": job_id,
+        "provider_video_id": submission["video_id"],
+        "status": job["status"] if job else "queued",
+        "voice": "HeyGen avatar look's default voice",
+        "message": "One render was submitted. Review it in Creative Lab after HeyGen completes.",
+    }
+
+
+@app.patch("/api/creative/video-jobs/{job_id}")
+async def review_creative_video(job_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if set(payload) != {"decision"}:
+        raise HTTPException(status_code=422, detail="Provide decision as approved or rejected.")
+    try:
+        result = creative_store.review_video_render(job_id, payload["decision"])
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Video render job not found.")
+    if result == "not_ready":
+        raise HTTPException(status_code=409, detail="This render is not ready for review.")
+    if result == "creative_not_approved":
+        raise HTTPException(status_code=409, detail="The creative must remain approved to approve its video.")
+    return {"id": job_id, "status": result}
 
 
 @app.post("/api/creative/creatives/{creative_id}/results")
