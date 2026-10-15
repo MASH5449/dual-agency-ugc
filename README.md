@@ -17,19 +17,71 @@ uvicorn main:app --host 0.0.0.0 --port 8080
 `GET /` is the health check. `GET /leads` is the legacy in-memory list.
 `GET /api/stream` is the log stream.
 
-## Apify prospect review
+## Apify prospect intake and review
 
-The deployed app can import the JSON dataset export from the tested Apify
-Shopify Store Leads actor. Open `/prospects/review`, enter the review token,
-choose the downloaded JSON file, then import it. The page displays the company,
-website, published contacts, and sample products so each store can be checked.
+Open `/prospects/review` and enter the review token. Once Apify is configured,
+**Run Apify now** starts the selected Actor and imports its dataset directly;
+the app also retains the manual JSON import option. The page displays the
+company, website, published contacts, and sample products so each store can be
+checked.
 
 Imported records are stored separately in SQLite, deduplicated by website
 domain and Apify record ID, and begin in `needs_review`. Approve or reject each
-record in the review page. **Approval does not send email, add the prospect to
-Instantly, or start video generation.** This first build milestone is only
-source-data intake and human qualification; automated discovery and dispatch
-remain separate steps.
+record in the review page. Approving a prospect with a valid published business
+email automatically creates a personalized outreach draft for review. **It does
+not send email, add the prospect to Instantly, or start video generation.**
+Prospects without an eligible email can still be approved for creative planning.
+The Actor's output must include `name` and `websiteUrl`; `id`, `contacts`, and
+`sampleProducts` are optional. The Actor ID and input are explicit environment
+settings because different Apify Actors have different input schemas.
+
+Automatic runs are off by default. Set `APIFY_AUTO_RUN=true` only after a
+successful manual test. The scheduler waits one full configured interval after
+startup before its first automatic run. Configure only one Railway replica:
+this scheduler is process-local, while prospect data is shared through SQLite.
+Each run passes Apify's `maxTotalChargeUsd`, run timeout, and `maxItems` limits;
+`maxItems` is a charge limit for pay-per-result Actors, not a guarantee that
+the Actor itself stops producing results. The dataset fetch is separately
+limited to `APIFY_MAX_ITEMS` (at most 200 records).
+
+Run status is saved in the prospects database. If the server restarts or loses
+contact after submission, the app blocks another run because Apify may still
+be processing or may already have charged for the run. Check the run in Apify
+first, then use **I've checked Apify; allow another run** in the review page.
+This guard also applies after an uncertain run-status or dataset request.
+
+## Approval-gated Instantly outreach
+
+The prospect review page creates one personalized plain-text email per approved
+prospect, using the imported company and product names, immediately when you
+approve the prospect. The owner can edit the subject and body. Drafting and
+editing do not send anything; the owner must click **Approve & send with
+Instantly** for that specific email. Previously approved prospects with no
+saved draft can use the retry-draft action.
+
+Sending creates one lead in the configured Instantly campaign with
+`outreach_subject` and `outreach_body` custom variables. Configure that campaign
+as a single email step whose subject and body use `{{outreach_subject}}` and
+`{{outreach_body}}`. The campaign uses the sending account, signature, schedule,
+and unsubscribe settings configured in Instantly; enrollment is not a guarantee
+that delivery has already occurred. Set the sender to the intended business
+account (for example, `alex@useleadloop.xyz`) and verify the campaign preview
+and unsubscribe/footer settings before enabling live sends. Do not attach a
+multi-step follow-up sequence to this campaign.
+
+`ENABLE_OUTREACH` defaults to off. Keep it off until the one-step campaign has
+been configured and tested with an internal address. Live sending additionally
+requires `INSTANTLY_API_KEY` and the separate
+`INSTANTLY_OUTREACH_CAMPAIGN_ID`; `INSTANTLY_CAMPAIGN_ID` remains reserved for
+the legacy paid-customer pause integration. Each prospect can be enrolled only
+once from this app. A network timeout or Instantly server error is marked
+`submission_unknown`; check Instantly before taking further action, to avoid
+duplicate outreach. An owner can suppress an address from future sends via the
+review page. This app does not yet synchronize replies or suppressions back to
+Instantly automatically.
+
+Emails are generated from supplied prospect data, not verified claims about the
+brand. Review contact appropriateness and all copy before sending.
 
 ## Creative testing workflow
 
@@ -87,6 +139,17 @@ Configure these Railway variables before using the review page:
 | `CREATIVE_DB_PATH` | Optional database path for creative plans; defaults to `PROSPECTS_DB_PATH`. |
 | `OPENAI_API_KEY` | Required to generate campaign concept and script drafts. |
 | `HEYGEN_API_KEY` | Required for explicit one-at-a-time Creative Lab video renders. |
+| `ENABLE_OUTREACH` | Defaults to `false`; set to `true` only after reviewing the dedicated Instantly one-step campaign configuration. |
+| `INSTANTLY_OUTREACH_CAMPAIGN_ID` | ID of the dedicated one-step outreach campaign; does not use the legacy customer-pause campaign ID. |
+| `APIFY_API_TOKEN` | Apify API token; never exposed by the review API. |
+| `APIFY_ACTOR_ID` | Defaults to the selected Shopify Store Leads Actor; override with an Actor ID or `username~actor-name`. |
+| `APIFY_ACTOR_INPUT_JSON` | Optional JSON object override. Default pilot searches skincare in the Beauty category in the US, requests 25 stores, enables duplicate-history skipping, and leaves website enrichment off. |
+| `APIFY_AUTO_RUN` | Defaults to `false`; enables scheduled runs only after valid Apify configuration is present. |
+| `APIFY_INTERVAL_SECONDS` | Scheduled run interval; defaults to 86400 and must be at least 300 seconds. |
+| `APIFY_MAX_CHARGE_USD` | Maximum Apify charge per run; defaults to $5.00. |
+| `APIFY_MAX_ITEMS` | Maximum dataset records imported per run; defaults to 25 and cannot exceed 200. |
+| `APIFY_RUN_TIMEOUT_SECONDS` | Actor run timeout; defaults to 1800 seconds and must be at least 30. |
+| `APIFY_POLL_INTERVAL_SECONDS` | Actor status polling interval; defaults to 10 seconds. |
 
 For data to survive Railway restarts and redeploys, attach a Railway Volume
 mounted at `/data` and set `PROSPECTS_DB_PATH=/data/prospects.sqlite3`. Without
@@ -94,7 +157,8 @@ a persistent volume, the database is local to the container and can be lost.
 The import accepts a JSON list or an object with an `items` list, up to 200
 records and 5 MB per request. It imports published business contact fields as
 source data, not as verified decision-maker addresses or permission to contact.
-The same token protects the creative campaign and results APIs.
+The same token protects the Apify run controls, prospect review, and creative
+campaign and results APIs.
 
 ## Env
 
@@ -103,7 +167,8 @@ The same token protects the creative campaign and results APIs.
 | `HEYGEN_API_KEY` | Legacy fulfillment renders and explicit Creative Lab renders. |
 | `OPENAI_API_KEY` | Existing webhook scripts and on-demand Creative Lab concept generation. |
 | `STRIPE_WEBHOOK_SECRET` | When set, `/webhook/stripe` rejects a bad `Stripe-Signature`. Unset = accepted, and a warning is logged. |
-| `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID` | Pause the buyer after payment. |
+| `INSTANTLY_API_KEY` / `INSTANTLY_CAMPAIGN_ID` | Legacy integration: pause the buyer's lead after payment. |
+| `INSTANTLY_OUTREACH_CAMPAIGN_ID` / `ENABLE_OUTREACH` | Approval-gated prospect enrollment; off by default. |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` | Delivery mail. Default host is `smtp.porkbun.com:587`. |
 | `PROSPECT_REVIEW_TOKEN` | Enables authenticated prospect review and import APIs when set. |
 | `PROSPECTS_DB_PATH` | Prospect SQLite database location. Use a Railway Volume for persistence. |

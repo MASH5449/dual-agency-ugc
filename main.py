@@ -20,6 +20,11 @@ from creative_lab import CreativeStore
 from creative_generation import generate_creative_concepts, validate_generation_options
 from creative_handoff import generate_production_handoff
 from creative_video import submit_heygen_video
+from apify_intake import ApifyRunner
+from outreach import (
+    draft_for_approved_prospect,
+    enroll_approved_email,
+)
 from prospects import ProspectStore
 
 app = FastAPI(title="LeadLoop Engine API", version="5.5.0")
@@ -44,6 +49,10 @@ generation_jobs = {}  # Maps HeyGen video_id -> recipient email
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 INSTANTLY_API_KEY = os.getenv("INSTANTLY_API_KEY", "")
 INSTANTLY_CAMPAIGN_ID = os.getenv("INSTANTLY_CAMPAIGN_ID", "")
+INSTANTLY_OUTREACH_CAMPAIGN_ID = os.getenv("INSTANTLY_OUTREACH_CAMPAIGN_ID", "")
+ENABLE_OUTREACH = os.getenv("ENABLE_OUTREACH", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
@@ -56,6 +65,12 @@ PROSPECTS_DB_PATH = os.getenv("PROSPECTS_DB_PATH", "data/prospects.sqlite3")
 PROSPECT_REVIEW_TOKEN = os.getenv("PROSPECT_REVIEW_TOKEN", "")
 MAX_PROSPECT_IMPORT_BYTES = 5 * 1024 * 1024
 prospect_store = ProspectStore(PROSPECTS_DB_PATH)
+apify_runner = ApifyRunner.from_environment(
+    prospect_store,
+    post=requests.post,
+    get=requests.get,
+)
+apify_schedule_task = None
 creative_store = CreativeStore(os.getenv("CREATIVE_DB_PATH", PROSPECTS_DB_PATH))
 MAX_CREATIVE_REQUEST_BYTES = 32 * 1024
 
@@ -563,8 +578,30 @@ async def heygen_webhook(request: Request, background_tasks: BackgroundTasks):
 async def startup_event():
     prospect_store.initialize()
     creative_store.initialize()
+    apify_runner.restore_state()
+    global apify_schedule_task
+    if apify_runner.auto_run and not apify_runner.configuration_error:
+        apify_schedule_task = asyncio.create_task(apify_runner.run_schedule())
+        print(
+            f"[Apify] Automatic intake enabled; interval {apify_runner.interval_seconds}s, "
+            f"maximum charge ${apify_runner.max_charge_usd:.2f} per run."
+        )
+    elif apify_runner.auto_run:
+        print(f"[Apify] Automatic intake not started: {apify_runner.configuration_error}")
     await log_event("Core Engine", "LeadLoop Command Center Online", "READY")
-    print("[Outreach] Held. Prospect review is available; automated dispatch is not enabled.")
+    outreach_state = "enabled" if ENABLE_OUTREACH else "disabled"
+    print(f"[Outreach] Sending is {outreach_state}; prospect drafts require owner approval.")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if apify_schedule_task:
+        apify_schedule_task.cancel()
+        try:
+            await apify_schedule_task
+        except asyncio.CancelledError:
+            pass
+
 
 @app.get("/")
 def health_check():
@@ -612,6 +649,46 @@ def prospect_review_page():
     return FileResponse(Path(__file__).with_name("prospect_review.html"))
 
 
+@app.get("/api/apify/status")
+def get_apify_status(request: Request):
+    require_prospect_review_access(request)
+    return apify_runner.status()
+
+
+@app.post("/api/apify/run", status_code=202)
+async def trigger_apify_run(request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload:
+        raise HTTPException(status_code=422, detail="This action does not accept a request body.")
+    try:
+        started = await apify_runner.start()
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    return {
+        **apify_runner.status(),
+        "message": (
+            "Apify run started."
+            if started
+            else "An Apify run is already in progress."
+        ),
+    }
+
+
+@app.post("/api/apify/clear-interrupted")
+async def clear_interrupted_apify_run(request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload != {"confirm_reviewed": True}:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm that the previous run was checked in Apify before unlocking another run.",
+        )
+    if not apify_runner.clear_block():
+        raise HTTPException(status_code=409, detail="There is no interrupted run to clear.")
+    return {"state": "idle", "message": "The previous run was checked; a new run can be started."}
+
+
 @app.post("/api/prospects/import/apify")
 async def import_apify_prospects(request: Request):
     require_prospect_review_access(request)
@@ -652,7 +729,191 @@ async def review_prospect(prospect_id: int, request: Request):
         raise HTTPException(status_code=422, detail="Review notes must be text up to 2,000 characters.")
     if not prospect_store.review(prospect_id, status, note):
         raise HTTPException(status_code=404, detail="Prospect not found.")
-    return {"id": prospect_id, "status": status}
+    response = {"id": prospect_id, "status": status}
+    if status == "approved":
+        draft_status, _ = await ensure_outreach_draft(prospect_id)
+        response["outreach_draft_status"] = draft_status
+    return response
+
+
+async def ensure_outreach_draft(prospect_id):
+    prospect = prospect_store.get_outreach_prospect(prospect_id)
+    if not prospect:
+        return "not_found", None
+    try:
+        result = await draft_for_approved_prospect(
+            prospect_store,
+            openai_client,
+            prospect_id,
+            prospect,
+        )
+    except OpenAIError:
+        print("[Outreach] Automatic email draft generation failed at the provider.")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Prospect approval was saved, but email draft generation failed. "
+                "Retry draft generation from the approved prospects list."
+            ),
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Prospect approval was saved, but the email draft was invalid: {error}",
+        )
+    if result[0] == "generation_unavailable":
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Prospect approval was saved, but its email draft could not be "
+                "generated until OPENAI_API_KEY is configured."
+            ),
+        )
+    return result
+
+
+@app.get("/api/outreach")
+def list_outreach_prospects(request: Request):
+    require_prospect_review_access(request)
+    return {
+        "enabled": ENABLE_OUTREACH,
+        "instantly_configured": bool(
+            INSTANTLY_API_KEY and INSTANTLY_OUTREACH_CAMPAIGN_ID
+        ),
+        "prospects": prospect_store.list_outreach_prospects(),
+    }
+
+
+@app.post("/api/outreach/{prospect_id}/draft")
+async def create_outreach_draft(prospect_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload:
+        raise HTTPException(status_code=422, detail="This action does not accept a request body.")
+    draft_status, draft = await ensure_outreach_draft(prospect_id)
+    if draft_status == "not_found":
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    if draft_status == "not_approved":
+        raise HTTPException(status_code=409, detail="Approve the prospect before drafting outreach.")
+    if draft_status == "no_email":
+        raise HTTPException(status_code=409, detail="This prospect has no valid published business email.")
+    if draft_status == "suppressed":
+        raise HTTPException(status_code=409, detail="This email address is suppressed.")
+    if draft_status != "draft" or not draft:
+        raise HTTPException(
+            status_code=409,
+            detail="An outreach draft already exists or is not available for regeneration.",
+        )
+    return {"id": prospect_id, **draft, "status": "draft"}
+
+
+@app.patch("/api/outreach/{prospect_id}/draft")
+async def update_outreach_draft(prospect_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    try:
+        result = prospect_store.update_outreach_draft(prospect_id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    if result == "not_approved":
+        raise HTTPException(status_code=409, detail="Prospect approval is required to edit outreach.")
+    if result == "no_draft":
+        raise HTTPException(status_code=404, detail="Outreach draft not found.")
+    if result == "not_editable":
+        raise HTTPException(status_code=409, detail="Only unsent drafts can be edited.")
+    if result == "suppressed":
+        raise HTTPException(status_code=409, detail="This email address is suppressed.")
+    return {"id": prospect_id, "status": "draft"}
+
+
+@app.post("/api/outreach/{prospect_id}/send")
+async def send_approved_outreach(prospect_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if payload:
+        raise HTTPException(status_code=422, detail="This action does not accept a request body.")
+    if not ENABLE_OUTREACH:
+        raise HTTPException(
+            status_code=503,
+            detail="Outreach sending is disabled. Enable it only after configuring the one-step Instantly campaign.",
+        )
+    if not INSTANTLY_API_KEY or not INSTANTLY_OUTREACH_CAMPAIGN_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="Configure INSTANTLY_API_KEY and INSTANTLY_OUTREACH_CAMPAIGN_ID before sending.",
+        )
+    result, draft = prospect_store.reserve_outreach_send(prospect_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    if result == "not_approved":
+        raise HTTPException(status_code=409, detail="Prospect approval is required before outreach.")
+    if result == "no_draft":
+        raise HTTPException(status_code=409, detail="Create and review an email draft before sending.")
+    if result == "suppressed":
+        raise HTTPException(status_code=409, detail="This email address is suppressed.")
+    if result != "sending":
+        raise HTTPException(
+            status_code=409,
+            detail="This draft is not sendable. Check its current status before taking action.",
+        )
+    try:
+        submission = await asyncio.to_thread(
+            enroll_approved_email,
+            draft["recipient_email"],
+            draft["company_name"],
+            draft["website_url"],
+            draft["subject"],
+            draft["body"],
+            INSTANTLY_API_KEY,
+            INSTANTLY_OUTREACH_CAMPAIGN_ID,
+            requests.post,
+        )
+    except requests.RequestException:
+        prospect_store.finish_outreach_send(
+            prospect_id,
+            "submission_unknown",
+            error_message="The connection ended before Instantly confirmed enrollment.",
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="Instantly enrollment is unconfirmed. Check Instantly before retrying.",
+        )
+    prospect_store.finish_outreach_send(
+        prospect_id,
+        submission["status"],
+        submission["provider_lead_id"],
+        submission["detail"],
+    )
+    if submission["status"] == "submission_unknown":
+        raise HTTPException(status_code=502, detail=submission["detail"])
+    if submission["status"] == "failed":
+        raise HTTPException(status_code=502, detail=submission["detail"])
+    print(f"[Outreach] Prospect {prospect_id} enrolled in the approved campaign.")
+    return {
+        "id": prospect_id,
+        "status": "enrolled",
+        "message": "Instantly accepted the approved email. It will send according to the campaign schedule.",
+    }
+
+
+@app.post("/api/outreach/{prospect_id}/suppress")
+async def suppress_outreach(prospect_id: int, request: Request):
+    require_prospect_review_access(request)
+    payload = await read_json_body(request)
+    if set(payload) - {"reason"}:
+        raise HTTPException(status_code=422, detail="Provide an optional suppression reason only.")
+    reason = payload.get("reason", "")
+    try:
+        result = prospect_store.suppress_outreach_email(prospect_id, reason)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    if result == "no_email":
+        raise HTTPException(status_code=409, detail="This prospect has no valid email to suppress.")
+    return {"id": prospect_id, "status": "suppressed"}
 
 
 @app.get("/creative-lab", include_in_schema=False)

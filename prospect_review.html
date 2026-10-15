@@ -11,11 +11,12 @@
     .muted { color: #536273; }
     .controls, .card { border: 1px solid #ccd5df; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
     .controls { display: grid; gap: .75rem; }
+    .outreach-card { border-top: 1px solid #e3e8ed; margin-top: 1rem; padding-top: 1rem; }
     .card h2 { margin: 0 0 .25rem; font-size: 1.15rem; }
     .product { padding: .5rem 0; border-top: 1px solid #e3e8ed; }
     label { display: block; font-weight: 600; }
     input, textarea, button { font: inherit; padding: .55rem; }
-    input[type="password"], input[type="file"], textarea { display: block; width: min(100%, 42rem); margin-top: .25rem; }
+    input[type="password"], input[type="file"], input[type="text"], textarea { display: block; width: min(100%, 42rem); margin-top: .25rem; }
     button { cursor: pointer; margin: .4rem .4rem 0 0; }
     .error { color: #a21d1d; white-space: pre-wrap; }
     .success { color: #176b39; }
@@ -24,28 +25,58 @@
 </head>
 <body>
   <h1>Prospect review</h1>
-  <p class="muted">Import an Apify JSON export, check the business and product details, then approve or reject each record. Approval does not send outreach.</p>
+  <p class="muted">Import an Apify JSON export, check the business and product details, then approve or reject each record. Prospect approval does not send outreach.</p>
 
   <section class="controls" aria-label="Import and access">
     <label>Review token
       <input id="token" type="password" autocomplete="off" placeholder="Configured by the site owner">
     </label>
+    <div class="outreach-card">
+      <h2>Automatic Apify intake</h2>
+      <p class="muted">Run the configured Apify Actor and add its results to this review queue. New prospects are never approved or contacted automatically.</p>
+      <div id="apify-status" role="status" class="muted">Load status after entering the review token.</div>
+      <button id="run-apify" disabled>Run Apify now</button>
+      <button id="refresh-apify">Refresh Apify status</button>
+      <button id="unlock-apify" hidden>I've checked Apify; allow another run</button>
+    </div>
     <label>Apify JSON export
       <input id="file" type="file" accept=".json,application/json">
     </label>
     <div>
       <button id="import">Import JSON</button>
       <button id="refresh">Load pending review</button>
+      <button id="load-outreach">Load approved prospects for outreach</button>
     </div>
     <div id="message" role="status"></div>
   </section>
 
   <main id="prospects"></main>
+  <section class="controls" aria-label="Outreach review">
+    <h2>Review outreach drafts</h2>
+    <p class="muted">Drafts are not sent automatically. Edit each message and explicitly approve it before Instantly enrollment. Live sending is disabled until the owner configures it.</p>
+    <div id="outreach-status" role="status"></div>
+    <main id="outreach"></main>
+  </section>
   <script>
     const tokenInput = document.querySelector("#token");
     const message = document.querySelector("#message");
     const list = document.querySelector("#prospects");
+    const outreachList = document.querySelector("#outreach");
+    const outreachStatus = document.querySelector("#outreach-status");
+    const apifyStatus = document.querySelector("#apify-status");
+    const runApifyButton = document.querySelector("#run-apify");
+    const unlockApifyButton = document.querySelector("#unlock-apify");
     const headers = () => ({ "Authorization": `Bearer ${tokenInput.value}` });
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: { ...headers(), ...(options.headers || {}) }
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Request failed.");
+      return result;
+    }
 
     function setMessage(text, kind = "") {
       message.className = kind;
@@ -74,6 +105,241 @@
       parent.append(element);
       return element;
     }
+
+    function renderOutreach(prospects, enabled, configured) {
+      outreachList.replaceChildren();
+      outreachStatus.textContent = enabled && configured
+        ? "Sending is enabled. Instantly will follow the configured campaign schedule."
+        : "Sending is disabled. Drafting and editing are available, but no email can be sent.";
+      outreachStatus.className = enabled && configured ? "success" : "muted";
+      if (!prospects.length) {
+        addText(outreachList, "p", "No approved prospects yet.", "muted");
+        return;
+      }
+      for (const prospect of prospects) {
+        const card = document.createElement("article");
+        card.className = "outreach-card";
+        addText(card, "h3", prospect.company_name);
+        addText(card, "p", prospect.domain);
+        if (!prospect.email) {
+          addText(card, "p", "No valid published business email was included in the imported data.", "muted");
+          outreachList.append(card);
+          continue;
+        }
+        addText(card, "p", `Recipient: ${prospect.email}`);
+        if (prospect.suppressed) {
+          addText(card, "p", "This address is suppressed from future app outreach.", "muted");
+          outreachList.append(card);
+          continue;
+        }
+        if (!prospect.outreach_status) {
+          addText(
+            card,
+            "p",
+            "No saved draft yet. New drafts are created automatically when you approve a prospect.",
+            "muted"
+          );
+          const draftButton = document.createElement("button");
+          draftButton.textContent = "Retry draft generation";
+          draftButton.addEventListener("click", async () => {
+            draftButton.disabled = true;
+            draftButton.textContent = "Drafting…";
+            try {
+              await api(`/api/outreach/${prospect.id}/draft`, {
+                method: "POST", headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({})
+              });
+              await loadOutreach();
+              setMessage(`Draft created for ${prospect.company_name}. Review and edit it before sending.`, "success");
+            } catch (error) { setMessage(error.message, "error"); }
+            finally { draftButton.disabled = false; draftButton.textContent = "Retry draft generation"; }
+          });
+          card.append(draftButton);
+          outreachList.append(card);
+          continue;
+        }
+        addText(card, "p", `Status: ${prospect.outreach_status.replaceAll("_", " ")}`, "muted");
+        if (prospect.outreach_status === "submission_unknown") {
+          addText(card, "p", "Instantly's response was uncertain. Check the Instantly campaign before taking any further action.", "error");
+          outreachList.append(card);
+          continue;
+        }
+        if (prospect.outreach_status === "sending") {
+          addText(card, "p", "A send request is in progress or was interrupted. Check Instantly before trying again.", "error");
+          outreachList.append(card);
+          continue;
+        }
+        if (prospect.outreach_status === "enrolled") {
+          addText(card, "p", "Instantly accepted this lead and approved email. It will send according to the campaign schedule.", "success");
+          if (prospect.provider_lead_id) addText(card, "p", `Instantly lead ID: ${prospect.provider_lead_id}`, "muted");
+          outreachList.append(card);
+          continue;
+        }
+        if (prospect.error_message) addText(card, "p", prospect.error_message, "error");
+
+        const editable = ["draft", "failed"].includes(prospect.outreach_status);
+        const form = document.createElement("form");
+        const subjectLabel = document.createElement("label");
+        subjectLabel.textContent = "Subject";
+        const subject = document.createElement("input");
+        subject.type = "text";
+        subject.name = "subject";
+        subject.maxLength = 200;
+        subject.required = true;
+        subject.value = prospect.subject || "";
+        subject.disabled = !editable;
+        subjectLabel.append(subject);
+        form.append(subjectLabel);
+        const bodyLabel = document.createElement("label");
+        bodyLabel.textContent = "Email body";
+        const body = document.createElement("textarea");
+        body.name = "body";
+        body.maxLength = 5000;
+        body.required = true;
+        body.value = prospect.body || "";
+        body.disabled = !editable;
+        bodyLabel.append(body);
+        form.append(bodyLabel);
+        if (editable) {
+          const save = document.createElement("button");
+          save.type = "submit";
+          save.textContent = "Save edits";
+          form.append(save);
+          form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            save.disabled = true;
+            try {
+              await api(`/api/outreach/${prospect.id}/draft`, {
+                method: "PATCH",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ subject: subject.value, body: body.value })
+              });
+              await loadOutreach();
+              setMessage("Email draft saved. It has not been sent.", "success");
+            } catch (error) { setMessage(error.message, "error"); }
+            finally { save.disabled = false; }
+          });
+        }
+        card.append(form);
+        if (prospect.outreach_status === "draft") {
+          const send = document.createElement("button");
+          send.textContent = "Approve & send with Instantly";
+          send.disabled = !(enabled && configured);
+          send.addEventListener("click", async () => {
+            if (!confirm(
+              `Approve and enroll this email for ${prospect.email}? Instantly may send it according to the campaign schedule.`
+            )) return;
+            send.disabled = true;
+            try {
+              await api(`/api/outreach/${prospect.id}/draft`, {
+                method: "PATCH",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ subject: subject.value, body: body.value })
+              });
+              const result = await api(`/api/outreach/${prospect.id}/send`, {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({})
+              });
+              await loadOutreach();
+              setMessage(result.message, "success");
+            } catch (error) {
+              let refreshError = "";
+              try { await loadOutreach(); }
+              catch (loadError) { refreshError = ` Status refresh failed: ${loadError.message}`; }
+              setMessage(`${error.message}${refreshError}`, "error");
+            } finally { send.disabled = !(enabled && configured); }
+          });
+          card.append(send);
+        }
+        const suppress = document.createElement("button");
+        suppress.textContent = "Suppress this address from future app outreach";
+        suppress.addEventListener("click", async () => {
+          if (!confirm(`Suppress ${prospect.email} from future outreach initiated by this app?`)) return;
+          try {
+            await api(`/api/outreach/${prospect.id}/suppress`, {
+              method: "POST",
+              headers: { ...headers(), "Content-Type": "application/json" },
+              body: JSON.stringify({ reason: "Owner suppression" })
+            });
+            await loadOutreach();
+            setMessage("Address suppressed from future app outreach.", "success");
+          } catch (error) { setMessage(error.message, "error"); }
+        });
+        card.append(suppress);
+        outreachList.append(card);
+      }
+    }
+
+    async function loadOutreach() {
+      const result = await api("/api/outreach", { headers: headers() });
+      renderOutreach(result.prospects, result.enabled, result.instantly_configured);
+    }
+
+    async function loadApifyStatus() {
+      const status = await api("/api/apify/status", { headers: headers() });
+      const state = status.state.replaceAll("_", " ");
+      const counts = status.results
+        ? ` Imported ${status.results.inserted}; duplicates ${status.results.duplicates}; invalid ${status.results.invalid}.`
+        : "";
+      apifyStatus.textContent = status.configured
+        ? `${status.message} State: ${state}.${status.run_id ? ` Run ID: ${status.run_id}.` : ""}${counts} ${status.auto_run ? `Automatic runs every ${Math.round(status.interval_seconds / 3600)} hour(s).` : "Automatic runs are off."} Per-run spend cap: $${Number(status.max_charge_usd).toFixed(2)}; max results: ${status.max_items}.`
+        : `Apify is not configured: ${status.configuration_error}`;
+      apifyStatus.className = status.state === "failed" || !status.configured ? "error" : "muted";
+      runApifyButton.disabled = !status.configured || status.active;
+      unlockApifyButton.hidden = !["interrupted", "submission_unknown"].includes(status.state);
+      return status;
+    }
+
+    unlockApifyButton.addEventListener("click", async () => {
+      if (!confirm("Have you checked the Apify console and confirmed the previous run is finished or absent?")) return;
+      unlockApifyButton.disabled = true;
+      try {
+        await api("/api/apify/clear-interrupted", {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm_reviewed: true })
+        });
+        await loadApifyStatus();
+      } catch (error) {
+        apifyStatus.textContent = error.message;
+        apifyStatus.className = "error";
+      } finally {
+        unlockApifyButton.disabled = false;
+      }
+    });
+
+    document.querySelector("#refresh-apify").addEventListener("click", async () => {
+      try { await loadApifyStatus(); }
+      catch (error) { apifyStatus.textContent = error.message; apifyStatus.className = "error"; }
+    });
+
+    runApifyButton.addEventListener("click", async () => {
+      runApifyButton.disabled = true;
+      try {
+        const result = await api("/api/apify/run", {
+          method: "POST",
+          headers: { ...headers(), "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        apifyStatus.textContent = result.message;
+        const poll = async () => {
+          try {
+            const status = await loadApifyStatus();
+            if (status.active) window.setTimeout(poll, 3000);
+            else if (status.state === "succeeded") await loadPending();
+          } catch (error) {
+            apifyStatus.textContent = error.message;
+            apifyStatus.className = "error";
+          }
+        };
+        window.setTimeout(poll, 1500);
+      } catch (error) {
+        apifyStatus.textContent = error.message;
+        apifyStatus.className = "error";
+        runApifyButton.disabled = false;
+      }
+    });
 
     function render(prospects) {
       list.replaceChildren();
@@ -123,10 +389,18 @@
                 });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.detail || "Review failed.");
-                setMessage(`${prospect.company_name}: ${decision}.`, "success");
+                setMessage(
+                  decision === "approved" && result.outreach_draft_status === "draft"
+                    ? `${prospect.company_name}: approved. Personalized email draft created for review.`
+                    : `${prospect.company_name}: ${decision}.`,
+                  "success"
+                );
                 await loadPending();
               } catch (error) {
-                setMessage(error.message, "error");
+                let refreshError = "";
+                try { await loadPending(); }
+                catch (loadError) { refreshError = ` Status refresh failed: ${loadError.message}`; }
+                setMessage(`${error.message}${refreshError}`, "error");
               }
             });
             card.append(button);
@@ -144,11 +418,17 @@
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Could not load prospects.");
       render(result.prospects);
+      await loadOutreach();
       setMessage(`Loaded ${result.prospects.length} prospect(s) for review.`, "success");
     }
 
     document.querySelector("#refresh").addEventListener("click", async () => {
       try { await loadPending(); }
+      catch (error) { setMessage(error.message, "error"); }
+    });
+
+    document.querySelector("#load-outreach").addEventListener("click", async () => {
+      try { await loadOutreach(); }
       catch (error) { setMessage(error.message, "error"); }
     });
 

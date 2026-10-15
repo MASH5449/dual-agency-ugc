@@ -70,6 +70,63 @@ class ProspectStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.review(1, "sent")
 
+    def test_outreach_requires_approved_prospect_and_published_email(self):
+        self.store.import_apify(
+            [{
+                "id": "shop-1",
+                "name": "Example Skincare",
+                "websiteUrl": "example.com",
+                "contacts": [{"method": "email", "target": "hello@example.com"}],
+            }]
+        )
+
+        self.assertEqual(self.store.create_outreach_draft(1, "Subject", "Body"), "not_approved")
+        self.store.review(1, "approved")
+        self.assertEqual(self.store.create_outreach_draft(1, "Subject", "Body"), "draft")
+        [prospect] = self.store.list_outreach_prospects()
+        self.assertEqual(prospect["email"], "hello@example.com")
+        self.assertEqual(prospect["outreach_status"], "draft")
+
+    def test_outreach_edit_and_reservation_are_single_use(self):
+        self.store.import_apify(
+            [{
+                "id": "shop-1",
+                "name": "Example Skincare",
+                "websiteUrl": "example.com",
+                "contacts": [{"method": "email", "target": "hello@example.com"}],
+            }]
+        )
+        self.store.review(1, "approved")
+        self.store.create_outreach_draft(1, "Original subject", "Original body")
+        self.assertEqual(
+            self.store.update_outreach_draft(1, {"subject": "Edited", "body": "Edited body"}),
+            "updated",
+        )
+
+        status, draft = self.store.reserve_outreach_send(1)
+        self.assertEqual(status, "sending")
+        self.assertEqual(draft["subject"], "Edited")
+        self.assertEqual(self.store.reserve_outreach_send(1)[0], "not_draft")
+        self.assertTrue(self.store.finish_outreach_send(1, "enrolled", "instantly-1"))
+        self.assertEqual(self.store.reserve_outreach_send(1)[0], "not_draft")
+
+    def test_suppression_blocks_draft_creation_and_send_reservation(self):
+        self.store.import_apify(
+            [{
+                "id": "shop-1",
+                "name": "Example Skincare",
+                "websiteUrl": "example.com",
+                "contacts": [{"method": "email", "target": "hello@example.com"}],
+            }]
+        )
+        self.store.review(1, "approved")
+        self.store.suppress_outreach_email(1, "Asked not to be contacted")
+        self.assertTrue(self.store.is_email_suppressed("HELLO@example.com"))
+        self.assertEqual(
+            self.store.create_outreach_draft(1, "Subject", "Body"),
+            "suppressed",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
